@@ -22,3 +22,20 @@ To run this project, you need to create a configuration file with your sensitive
 2. Edit the `config.ini` file and fill in your details (email addresses, SMTP credentials, etc.).
 
 3. Ensure the `config.ini` file is not added to version control by verifying it is listed in `.gitignore`.
+
+## Prerequisites
+```
+import folium
+import subprocess
+import re
+import os
+import argparse
+import datetime
+from collections import defaultdict
+from geoip2.database import Reader
+from countries import country_names
+from jinja2 import Environment, FileSystemLoader
+from systemd import journal
+import configparser
+```
+The GeoIP database files must also be present in the same directory as the program.
