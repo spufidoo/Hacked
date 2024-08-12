@@ -1,0 +1,7 @@
+[EMAIL]
+sender_email = your-email@example.com
+recipient_email = recipient@example.com
+
+[WEB]
+hostname = your-hostname
+report_url = http://your-web-server/Hacker_Report.html

@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSH Logon Attempts</title>
+    <link rel="icon" href="/images/favicon.ico" type="image/x-icon">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #e9ecef;
+            color: #343a40;
+        }
+
+        h1, h2, h3 {
+            color: #495057;
+        }
+
+        .summary-table {
+            width: 100%;
+            margin-bottom: 20px;
+            border-collapse: collapse;
+        }
+
+        .summary-table th, .summary-table td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #dee2e6;
+            background-color: #ffffff;
+        }
+
+        .summary-table tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+
+        .summary-table th {
+            background-color: #343a40;
+            color: #ffffff;
+        }
+
+        .collapsible {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            padding: 10px;
+            width: 100%;
+            border: none;
+            text-align: left;
+            outline: none;
+            font-size: 16px;
+            margin-top: 10px;
+            border-radius: 5px;
+        }
+
+        .active, .collapsible:hover {
+            background-color: #0056b3;
+        }
+
+        .content {
+            padding: 0 18px;
+            display: none;
+            overflow: hidden;
+            background-color: #f1f1f1;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .content table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .content th, .content td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+            background-color: #ffffff;
+        }
+
+        .content tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+        }
+
+        iframe {
+            border: none;
+            border-radius: 5px;
+        }
+
+        .header-img {
+            width: 100%;
+            max-width: 300px;
+            height: auto;
+            border-radius: 10px;
+            display: block;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>SSH Logon Attempts</h1>
+    <a href="https://www.abuseipdb.com/user/51468"
+        title="AbuseIPDB is an IP address blacklist for webmasters and sysadmins to report IP addresses engaging in abusive behavior on their networks"
+        alt="AbuseIPDB Contributor Badge">
+        <img src="https://www.abuseipdb.com/contributor/51468.svg" height="80" class="header-img">
+    </a>
+    <h2>Summary</h2>
+    <table class="summary-table">
+        <tr>
+            <td>Date and Time:</td>
+            <td>{{ report_time }}</td>
+        </tr>
+        <tr>
+            <td>From Date:</td>
+            <td>{{ from_date }}</td>
+        </tr>
+        <tr>
+            <td>To Date:</td>
+            <td>{{ to_date }}</td>
+        </tr>
+        <tr>
+            <td>Total Attempts:</td>
+            <td>{{ TOTAL_ATTEMPTS }}</td>
+        </tr>
+        <tr>
+            <td>By IP Address:</td>
+            <td>{{ ip_count }}</td>
+        </tr>
+        <tr>
+            <td>By Country:</td>
+            <td>{{ country_count }}</td>
+        </tr>
+        <tr>
+            <td>By City:</td>
+            <td>{{ city_count }}</td>
+        </tr>
+        <tr>
+            <td>By User:</td>
+            <td>{{ user_count }}</td>
+        </tr>
+        <tr>
+            <td>Hostname:</td>
+            <td id="hostname">Loading...</td>
+        </tr>
+    </table>
+
+    <button class="collapsible">Attempts by Country</button>
+    <div class="content">
+        {% if country_attempts %}
+            {% for country, count in country_attempts %}
+            <button class="collapsible">{{ country }}: {{ count }} attempts</button>
+            <div class="content">
+                <div class="table-wrapper">
+                    <table>
+                        <tr>
+                            <th>IP Address</th>
+                            <th>City</th>
+                            <th>UserID</th>
+                            <th>Attempts</th>
+                        </tr>
+                        {% if country_details[country] %}
+                            {% for ip_address, details in country_details[country].items() %}
+                            {% for userid, attempts in details.users.items() %}
+                            <tr>
+                                <td><a href="https://www.abuseipdb.com/whois/{{ ip_address }}" target="_blank">{{ ip_address }}</a></td>
+                                <td>{{ details.city }}</td>
+                                <td>{{ userid }}</td>
+                                <td>{{ attempts }}</td>
+                            </tr>
+                            {% endfor %}
+                            {% endfor %}
+                        {% else %}
+                            <tr><td colspan="4">No data available for this country.</td></tr>
+                        {% endif %}
+                    </table>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <p>No country data available.</p>
+        {% endif %}
+    </div>
+
+    <button class="collapsible">Attempts by User</button>
+    <div class="content">
+        <table>
+            <tr>
+                <th>UserID</th>
+                <th>Attempts</th>
+            </tr>
+            {% if user_attempts %}
+                {% for user, count in user_attempts %}
+                <tr>
+                    <td>{{ user }}</td>
+                    <td>{{ count }}</td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr><td colspan="2">No user data available.</td></tr>
+            {% endif %}
+        </table>
+    </div>
+
+    <h2>Map of Logon Attempts</h2>
+    <iframe src="Hacker_Map.html" width="100%" height="600"></iframe>
+
+    <script>
+        // Set the hostname
+        document.getElementById('hostname').innerText = window.location.host;
+
+        // Collapsible sections
+        document.querySelectorAll(".collapsible").forEach(button => {
+            button.addEventListener("click", function () {
+                this.classList.toggle("active");
+                var content = this.nextElementSibling;
+                if (content.style.display === "block") {
+                    content.style.display = "none";
+                } else {
+                    content.style.display = "block";
+                }
+            });
+        });
+
+        // Initially collapse sections
+        window.onload = function () {
+            document.querySelectorAll(".collapsible").forEach(button => {
+                button.nextElementSibling.style.display = "none";
+            });
+        };
+    </script>
+</body>
+
+</html>
