@@ -9,6 +9,12 @@ The program is invoked thus:
     python HackedSSH.py                           -- The default. Process yesterday's logs
     python HackedSSH.py {--from_date [yesterday | '2024-05-16'] --to_date [today | '2024-05-16'] --email to_email_address }
 
+The html report output looks like this:
+![image](https://github.com/user-attachments/assets/47e30a0c-79a1-4412-9e10-8bccec5a7a76)
+and has collapsible Country and User fields, and a link to abuseipdb for each hostile IP address.
+There is also a nice map with IP geo-locations.
+
+
 ## Configuration
 
 To run this project, you need to create a configuration file with your sensitive information.
