@@ -13,16 +13,15 @@ from collections import defaultdict
 from geoip2.database import Reader
 
 # Global Variables
-config = configparser.ConfigParser()
 if os.getlogin() == 'root':
     ROOT = '/usr/local/bin'
 else:
     ROOT = '.'
-config.read(f'{ROOT}/HackedSSH.ini')
 
+config = configparser.ConfigParser()
+config.read(f'{ROOT}/HackedSSH.ini')
 sender_email = config['EMAIL']['sender_email']
 recipient_email = config['EMAIL']['recipient_email']
-
 hostname = config['WEB']['hostname']
 report_url = config['WEB']['report_url']
 
@@ -230,30 +229,11 @@ def send_email(report_url, recipient_email,debug=False):
 # Main function
 def main():
     journal.send(message=f"Started SSH report generation by {os.getlogin()}...", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
-    parser = argparse.ArgumentParser(
-        description="Process SSH logon attempts from journal logs."
-    )
-    parser.add_argument(
-        "--from_date",
-        required=False,
-        type=str,
-        default=datetime.now().date() - timedelta(days=1),
-        help="Start date for the journal logs (e.g., '2024-05-16').",
-    )
-    parser.add_argument(
-        "--to_date",
-        required=False,
-        type=str,
-        default=datetime.now().date(),
-        help="End date for the journal logs (e.g., '2024-05-17').",
-    )
-    parser.add_argument(
-        "--email",
-        required=False,
-        type=str,
-        default=recipient_email,
-        help="Recipient email address to send the report to.",
-    )
+
+    parser = argparse.ArgumentParser(description="Process SSH logon attempts from journal logs.")
+    parser.add_argument("--from_date",required=False,type=str,default=datetime.now().date() - timedelta(days=1),help="Start date for the journal logs (e.g., '2024-05-16').")
+    parser.add_argument("--to_date",required=False,type=str,default=datetime.now().date(),help="End date for the journal logs (e.g., '2024-05-17').")
+    parser.add_argument("--email",required=False,type=str,default=recipient_email,help="Recipient email address to send the report to.")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for more verbose output")
 
     args = parser.parse_args()
@@ -262,7 +242,6 @@ def main():
     generate_html_report(attack_attempts, TOTAL_ATTEMPTS, args.from_date, args.to_date,debug=args.debug)
 
     # Email the report link
-    # report_url = "http://home.davage.me/HackedSSH_Report.html"
     send_email(report_url, args.email,debug=args.debug)
 
     journal.send(message="Report successfully generated and saved.", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
