@@ -1,22 +1,24 @@
-#!/usr/bin/python
 # HackedSSH
-import folium
-import subprocess
-import re
 import os
+import re
+import folium
 import argparse
-import datetime
-from collections import defaultdict
-from geoip2.database import Reader
-from countries import country_names
+import subprocess
+import configparser
 from jinja2 import Environment, FileSystemLoader
 from systemd import journal
-import configparser
+from datetime import datetime, timedelta
+from countries import country_names
+from collections import defaultdict
+from geoip2.database import Reader
 
 # Global Variables
-
 config = configparser.ConfigParser()
-config.read('config.ini')
+if os.getlogin() == 'root':
+    ROOT = '/usr/local/bin'
+else:
+    ROOT = '.'
+config.read(f'{ROOT}/HackedSSH.ini')
 
 sender_email = config['EMAIL']['sender_email']
 recipient_email = config['EMAIL']['recipient_email']
@@ -24,8 +26,6 @@ recipient_email = config['EMAIL']['recipient_email']
 hostname = config['WEB']['hostname']
 report_url = config['WEB']['report_url']
 
-ROOT             = "."
-#ROOT             = "/usr/local/bin"
 TOTAL_ATTEMPTS   = 0
 HACKER_REPORT    = "/var/www/html/HackedSSH_Report.html"
 HACKER_MAP       = "/var/www/html/HackedSSH_Map.html"
@@ -34,35 +34,72 @@ HACKER_TEMPLATE  = "HackedSSH.html"
 GEO_CITY_PATH    = f"{ROOT}/GeoLite2-City.mmdb"
 GEO_COUNTRY_PATH = f"{ROOT}/GeoLite2-Country.mmdb"
 
-# Function to extract ssh logon attempts from the journal
-def extract_ssh_attempts(from_date, to_date):
-    ssh_attempts = defaultdict(lambda: defaultdict(int))
+# Function to extract various attack attempts from the journal
+def extract_attack_attempts(from_date, to_date,debug=False):
+    attack_attempts = defaultdict(lambda: defaultdict(int))
     TOTAL_ATTEMPTS = 0
+    
     try:
+        # Fetch logs from journalctl for multiple services
         journal_logs = subprocess.check_output(
             [
                 "journalctl",
-                "_SYSTEMD_UNIT=ssh.service",
-                f"--since={from_date}",
-                f"--until={to_date}",
-                "--no-pager",
+                "_SYSTEMD_UNIT=ssh.service", "_SYSTEMD_UNIT=xrdp.service",
+                "_SYSTEMD_UNIT=vsftpd.service", "_SYSTEMD_UNIT=apache2.service",
+                "_SYSTEMD_UNIT=nginx.service", "_SYSTEMD_UNIT=mysql.service",
+                "_SYSTEMD_UNIT=rdp.service", "_SYSTEMD_UNIT=smtp.service",
+                "_SYSTEMD_UNIT=openvpn.service", "_SYSTEMD_UNIT=wireshark.service",
+                "_SYSTEMD_UNIT=rdc.service", "_SYSTEMD_UNIT=telnet.service",
+                "_SYSTEMD_UNIT=sftp.service", f"--since={from_date}", f"--until={to_date}", "--no-pager",
             ]
         ).decode("utf-8")
+        
+        # Define patterns for different services and set default user id when not available
+        patterns = {
+            "ssh": (re.compile(r"Failed password for (?:invalid user )?(\w+) from ([0-9.]+)"), None),
+            "ssh1": (re.compile(r"Unable to negotiate with ([0-9.]+)"), "None"),
+            "ssh2": (re.compile(r"Connection closed by ([0-9.]+)"), "None"),
+            "ssh3": (re.compile(r"Connection closed by (?:invalid user ?(\w+)) ([0-9.]+)"), None),
+            "ssh4": (re.compile(r"banner exchange: Connection from ([0-9.]+)"), "None"),
+            "ssh5": (re.compile(r"Connection reset by ([0-9.]+)"), "None"),
+            "root": (re.compile(r"User (\w+) from ([0-9.]+)"), "None"),
+            "xrdp": (re.compile(r"xrdp-sesman\[\d+\]: (?:pam_unix\(xrdp-sesman:auth\): authentication failure|Failed to start session for user (\w+)) from ([0-9.]+)"), "None"),
+            "xrdp_ipv6": (re.compile(r"::ffff:([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)"), "None"),
+            "ftp": (re.compile(r"vsftpd: pam_unix\(vsftpd:auth\): authentication failure;.*rhost=([0-9.]+)"), "None"),
+            "apache": (re.compile(r"apache2: (?:Invalid user|Failed login) (\w+) from ([0-9.]+)"), None),
+            "nginx": (re.compile(r'nginx.*"GET.*" 401 .* from ([0-9.]+)'), "None"),
+            "mysql": (re.compile(r"Access denied for user '(\w+)'@'([0-9.]+)'"), None),
+            "smtp": (re.compile(r"postfix/smtpd.*: warning: ([0-9.]+): SASL .* authentication failed"), "None"),
+            "openvpn": (re.compile(r"openvpn\[\d+\]: (\w+\/)?(\w+)\/([0-9.]+): (?:AUTH_FAILED|TLS handshake failed)"), None),
+            "wireshark": (re.compile(r"wireshark.*Authentication failure from ([0-9.]+)"), "None"),
+            "rdc": (re.compile(r"rdc.*: Failed connection attempt from ([0-9.]+)"), "None"),
+            "telnet": (re.compile(r"telnetd: .* login failed for (\w+) from ([0-9.]+)"), None),
+            "sftp": (re.compile(r"sftp-server\[\d+\]: (\w+): user auth failure from ([0-9.]+)"), None)
+        }
+
+        # Process each line in the journal logs
         for line in journal_logs.splitlines():
-            match = re.search(r"Failed password for (?:invalid user )?(\w+) from ([0-9.]+)", line)
-            if match:
-                userid = match.group(1)
-                ip_address = match.group(2)
-                ssh_attempts[ip_address][userid] += 1
-                TOTAL_ATTEMPTS += 1
-            match = re.search(r"Unable to negotiate with ([0-9.]+)", line)
-            if match:
-                ip_address = match.group(1)
-                ssh_attempts[ip_address]["None"] += 1
-                TOTAL_ATTEMPTS += 1
+            match_found = False
+            for service, (pattern, default_userid) in patterns.items():
+                match = pattern.search(line)
+                if match:
+                    # Extract user ID and IP address (or use default)
+                    userid = match.group(1) if match.lastindex > 1 else default_userid or match.group(1)
+                    ip_address = match.group(match.lastindex)
+                    
+                    # Update attack attempt counts
+                    attack_attempts[ip_address][userid] += 1
+                    TOTAL_ATTEMPTS += 1
+                    match_found = True
+                    if debug:
+                        print(f"{line} -- Match found for {service}: {userid} from {ip_address}")  # Debugging match info
+            if not match_found and debug:
+                print(f"{line}")  # Debug output to verify each line
+
     except Exception as e:
         journal.send(message=f"Error reading journal logs: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
-    return ssh_attempts, TOTAL_ATTEMPTS
+    
+    return attack_attempts, TOTAL_ATTEMPTS
 
 # Function to get country from IP address
 def get_country_from_ip(ip_address):
@@ -103,7 +140,7 @@ def get_city_from_ip(ip_address):
         return "Unknown"
 
 # Function to generate HTML report
-def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, from_date, to_date):
+def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, from_date, to_date,debug=False):
     env = Environment(loader=FileSystemLoader(ROOT))
     template = env.get_template(HACKER_TEMPLATE)
     m = folium.Map(location=[0, 0], zoom_start=2)  # Create a map object
@@ -133,7 +170,7 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, from_date, to_date):
 
     country_attempts = sorted(country_attempts.items(), key=lambda x: x[1], reverse=True)
     user_attempts = sorted(user_attempts.items(), key=lambda x: x[0])
-    report_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     html_content = template.render(
         TOTAL_ATTEMPTS=TOTAL_ATTEMPTS,
@@ -154,7 +191,7 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, from_date, to_date):
     journal.send(message=f"Report saved to {HACKER_REPORT}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
 
 # Function to send an email with the report link using Postfix
-def send_email(report_url, recipient_email):
+def send_email(report_url, recipient_email,debug=False):
     hostname = subprocess.check_output("hostname").decode("utf-8").strip()
 
     # Create email headers and body
@@ -192,6 +229,7 @@ def send_email(report_url, recipient_email):
 
 # Main function
 def main():
+    journal.send(message=f"Started SSH report generation by {os.getlogin()}...", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
     parser = argparse.ArgumentParser(
         description="Process SSH logon attempts from journal logs."
     )
@@ -199,14 +237,14 @@ def main():
         "--from_date",
         required=False,
         type=str,
-        default="yesterday",
+        default=datetime.now().date() - timedelta(days=1),
         help="Start date for the journal logs (e.g., '2024-05-16').",
     )
     parser.add_argument(
         "--to_date",
         required=False,
         type=str,
-        default="today",
+        default=datetime.now().date(),
         help="End date for the journal logs (e.g., '2024-05-17').",
     )
     parser.add_argument(
@@ -216,16 +254,16 @@ def main():
         default=recipient_email,
         help="Recipient email address to send the report to.",
     )
-
-    journal.send(message="Starting SSH report generation...", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode for more verbose output")
 
     args = parser.parse_args()
-    ssh_attempts, TOTAL_ATTEMPTS = extract_ssh_attempts(args.from_date, args.to_date)
-    generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, args.from_date, args.to_date)
+    
+    attack_attempts, TOTAL_ATTEMPTS = extract_attack_attempts(args.from_date, args.to_date,debug=args.debug)
+    generate_html_report(attack_attempts, TOTAL_ATTEMPTS, args.from_date, args.to_date,debug=args.debug)
 
     # Email the report link
     # report_url = "http://home.davage.me/HackedSSH_Report.html"
-    send_email(report_url, args.email)
+    send_email(report_url, args.email,debug=args.debug)
 
     journal.send(message="Report successfully generated and saved.", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
 
