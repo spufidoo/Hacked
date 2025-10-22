@@ -125,8 +125,20 @@
             <td>{{ to_date }}</td>
         </tr>
         <tr>
-            <td>Total Attempts:</td>
+            <td>Total Failed Attempts:</td>
             <td>{{ TOTAL_ATTEMPTS }}</td>
+        </tr>
+        <tr style="background-color: #ffcccc;">
+            <td><strong>🚨 Successful Logins:</strong></td>
+            <td><strong>{{ TOTAL_SUCCESS }}</strong></td>
+        </tr>
+        <tr style="background-color: #ffe6e6;">
+            <td>Critical Events:</td>
+            <td>{{ severity_critical|length }}</td>
+        </tr>
+        <tr style="background-color: #fff3cd;">
+            <td>High Severity Events:</td>
+            <td>{{ severity_high|length }}</td>
         </tr>
         <tr>
             <td>By IP Address:</td>
@@ -150,6 +162,39 @@
         </tr>
     </table>
 
+    <h2 style="color: #dc3545;">🚨 Successful Logins</h2>
+    {% if TOTAL_SUCCESS > 0 %}
+    <div style="background-color: #ffcccc; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+        <h3>⚠️ WARNING: {{ TOTAL_SUCCESS }} Successful Login(s) Detected!</h3>
+        <button class="collapsible" style="background-color: #dc3545;">View Successful Login Details</button>
+        <div class="content">
+            <table>
+                <tr>
+                    <th>IP Address</th>
+                    <th>User</th>
+                    <th>Count</th>
+                    <th>Country</th>
+                </tr>
+                {% for ip_address, users in successful_logins.items() %}
+                    {% for user, count in users.items() %}
+                    <tr>
+                        <td><a href="https://www.abuseipdb.com/whois/{{ ip_address }}" target="_blank">{{ ip_address }}</a></td>
+                        <td><strong>{{ user }}</strong></td>
+                        <td>{{ count }}</td>
+                        <td>{{ successful_country_attempts|map(attribute=0)|list|first if successful_country_attempts else "Unknown" }}</td>
+                    </tr>
+                    {% endfor %}
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <div style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+        <h3>✅ No Successful Logins Detected</h3>
+    </div>
+    {% endif %}
+
+    <h2>🔒 Failed Login Attempts</h2>
     <button class="collapsible">Attempts by Country</button>
     <div class="content">
         {% if country_attempts %}
@@ -207,8 +252,54 @@
         </table>
     </div>
 
-    <h2>Map of Hacking Attempts</h2>
-    <iframe src="Hacker_Map.html" width="100%" height="600"></iframe>
+    <h2>📊 Security Events by Severity</h2>
+    
+    {% if severity_critical|length > 0 %}
+    <button class="collapsible" style="background-color: #dc3545;">🚨 Critical Events ({{ severity_critical|length }})</button>
+    <div class="content">
+        <table>
+            <tr>
+                <th>Service</th>
+                <th>User</th>
+                <th>IP Address</th>
+                <th>Timestamp</th>
+            </tr>
+            {% for event in severity_critical %}
+            <tr style="background-color: #ffe6e6;">
+                <td>{{ event.service }}</td>
+                <td>{{ event.user }}</td>
+                <td><a href="https://www.abuseipdb.com/whois/{{ event.ip }}" target="_blank">{{ event.ip }}</a></td>
+                <td>{{ event.timestamp }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+    
+    {% if severity_high|length > 0 %}
+    <button class="collapsible" style="background-color: #ffc107;">⚠️ High Severity Events ({{ severity_high|length }})</button>
+    <div class="content">
+        <table>
+            <tr>
+                <th>Service</th>
+                <th>User</th>
+                <th>IP Address</th>
+                <th>Timestamp</th>
+            </tr>
+            {% for event in severity_high %}
+            <tr style="background-color: #fff3cd;">
+                <td>{{ event.service }}</td>
+                <td>{{ event.user }}</td>
+                <td><a href="https://www.abuseipdb.com/whois/{{ event.ip }}" target="_blank">{{ event.ip }}</a></td>
+                <td>{{ event.timestamp }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    {% endif %}
+
+    <h2>🗺️ Map of Attack Attempts</h2>
+    <iframe src="HackedSSH_Map.html" width="100%" height="600"></iframe>
 
     <script>
         // Set the hostname

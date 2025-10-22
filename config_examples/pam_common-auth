@@ -1,0 +1,40 @@
+# PAM configuration for common authentication
+# Location: /etc/pam.d/common-auth
+# This is a hardened PAM configuration for authentication
+
+# Account lockout protection - lock account after 3 failed attempts for 10 minutes
+auth required pam_tally2.so deny=3 unlock_time=600 onerr=fail audit even_deny_root
+
+# Unix authentication
+auth [success=1 default=ignore] pam_unix.so nullok_secure
+
+# Print login failures
+auth optional pam_faildelay.so delay=2000000
+
+# Permit authentication
+auth requisite pam_deny.so
+
+# Required for account lockout counter
+auth required pam_permit.so
+
+# Optional: Warn about weak passwords
+# auth optional pam_warn.so
+
+# Reset failed login counter on successful login
+auth required pam_tally2.so onerr=succeed
+
+# ===== TWO-FACTOR AUTHENTICATION (OPTIONAL) =====
+# Uncomment after setting up Google Authenticator
+# auth required pam_google_authenticator.so nullok
+# The 'nullok' option allows users who haven't set up 2FA yet to still login
+# Remove 'nullok' after all users have configured 2FA
+
+# ===== TIME-BASED RESTRICTIONS (OPTIONAL) =====
+# Uncomment to restrict login times
+# auth required pam_time.so
+# Then configure /etc/security/time.conf
+
+# ===== ACCESS CONTROL (OPTIONAL) =====
+# Uncomment to restrict which users/groups can login
+# auth required pam_listfile.so onerr=fail item=user sense=allow file=/etc/ssh/allowed_users
+

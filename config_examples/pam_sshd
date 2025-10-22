@@ -1,0 +1,55 @@
+# PAM configuration for SSH daemon
+# Location: /etc/pam.d/sshd
+# This is a hardened PAM configuration for SSH
+
+# Standard Un*x authentication
+@include common-auth
+
+# Account lockout after failed attempts
+# This will lock accounts after 3 failed attempts for 10 minutes (600 seconds)
+auth required pam_tally2.so deny=3 unlock_time=600 onerr=fail audit even_deny_root
+
+# Disallow non-root logins when /etc/nologin exists
+account required pam_nologin.so
+
+# Standard Un*x account checks
+@include common-account
+
+# SELinux needs to be the first session rule (if using SELinux)
+# session required pam_selinux.so close
+
+# Set environment variables
+session required pam_env.so
+
+# Standard Un*x session
+@include common-session
+
+# Print message of the day
+session optional pam_motd.so motd=/run/motd.dynamic
+session optional pam_motd.so noupdate
+
+# Print information about last login
+session optional pam_lastlog.so
+
+# Limits
+session required pam_limits.so
+
+# Create home directory if it doesn't exist
+session required pam_mkhomedir.so
+
+# Standard Un*x password changing
+@include common-password
+
+# SELinux needs to be the last session rule (if using SELinux)
+# session required pam_selinux.so open
+
+# ===== TWO-FACTOR AUTHENTICATION (OPTIONAL) =====
+# Uncomment these lines after installing and configuring Google Authenticator
+# Install with: sudo apt-get install libpam-google-authenticator
+# Configure per user with: google-authenticator
+# auth required pam_google_authenticator.so nullok
+
+# ===== PASSWORD QUALITY REQUIREMENTS (OPTIONAL) =====
+# Uncomment to enforce strong passwords
+# password required pam_pwquality.so retry=3 minlen=12 difok=3 ucredit=-1 lcredit=-1 dcredit=-1 ocredit=-1
+

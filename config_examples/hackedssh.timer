@@ -1,0 +1,32 @@
+[Unit]
+Description=Daily HackedSSH Security Report Timer
+Documentation=https://github.com/yourusername/HackedSSH
+Requires=hackedssh.service
+
+[Timer]
+# Run daily at 1:00 AM
+OnCalendar=daily
+OnCalendar=*-*-* 01:00:00
+
+# Alternative schedules (uncomment as needed):
+# Run every 6 hours:
+# OnCalendar=*-*-* 00,06,12,18:00:00
+
+# Run every hour:
+# OnCalendar=hourly
+
+# Run at specific times:
+# OnCalendar=Mon,Wed,Fri *-*-* 02:00:00
+
+# If the system was off when the timer should have triggered, run it on next boot
+Persistent=true
+
+# Randomize the execution time by up to 5 minutes to avoid load spikes
+RandomizedDelaySec=300
+
+# Accuracy - timer won't wake up the system within this window
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+

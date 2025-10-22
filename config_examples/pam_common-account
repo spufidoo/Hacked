@@ -1,0 +1,28 @@
+# PAM configuration for common account management
+# Location: /etc/pam.d/common-account
+# This configuration manages account validity and access control
+
+# Unix account management
+account [success=1 new_authtok_reqd=done default=ignore] pam_unix.so
+
+# Deny access if account is locked by pam_tally2
+account required pam_tally2.so
+
+# Permit access if no previous module has denied it
+account requisite pam_deny.so
+account required pam_permit.so
+
+# ===== ACCESS TIME RESTRICTIONS (OPTIONAL) =====
+# Uncomment to restrict login times per user/group
+# account required pam_time.so
+# Then configure /etc/security/time.conf with entries like:
+# *;*;marcus;Al0000-2400
+
+# ===== GROUP MEMBERSHIP REQUIREMENTS (OPTIONAL) =====
+# Uncomment to require membership in a specific group
+# account required pam_succeed_if.so user ingroup ssh-users
+
+# ===== ACCOUNT EXPIRATION (OPTIONAL) =====
+# Uncomment to enforce account expiration dates
+# account required pam_lastlog.so inactive=90
+

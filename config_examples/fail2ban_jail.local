@@ -1,0 +1,172 @@
+# Fail2Ban Configuration for Thor
+# Location: /etc/fail2ban/jail.local
+# After creating this file, restart fail2ban: sudo systemctl restart fail2ban
+
+[DEFAULT]
+# Ban hosts for 1 hour (3600 seconds)
+bantime = 3600
+
+# A host is banned if it has generated "maxretry" during the last "findtime" seconds
+findtime = 600
+
+# Number of failures before a host gets banned
+maxretry = 3
+
+# Destination email for alerts
+destemail = marcus@davage.me
+
+# Sender name
+sendername = Thor-Fail2Ban
+
+# Email action with logs
+action = %(action_mwl)s
+
+# Ignore local IPs (adjust to your network)
+ignoreip = 127.0.0.1/8 ::1 192.168.1.0/24
+
+# Backend to use (auto, systemd, pyinotify, polling)
+backend = systemd
+
+# ===== SSH PROTECTION =====
+[sshd]
+enabled = true
+port = ssh
+# If you changed SSH port, update here:
+# port = ssh,2222
+logpath = %(sshd_log)s
+backend = %(sshd_backend)s
+maxretry = 3
+bantime = 86400
+findtime = 600
+
+[sshd-ddos]
+enabled = true
+port = ssh
+# If you changed SSH port:
+# port = ssh,2222
+logpath = %(sshd_log)s
+maxretry = 10
+findtime = 60
+bantime = 3600
+
+# ===== WEB SERVER PROTECTION =====
+[nginx-http-auth]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 3
+
+[nginx-noscript]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/access.log
+maxretry = 6
+
+[nginx-badbots]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/access.log
+maxretry = 2
+
+[nginx-noproxy]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/access.log
+maxretry = 2
+
+[nginx-limit-req]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 10
+
+# ===== APACHE PROTECTION (if using Apache) =====
+[apache-auth]
+enabled = false
+port = http,https
+logpath = /var/log/apache2/error.log
+maxretry = 3
+
+[apache-badbots]
+enabled = false
+port = http,https
+logpath = /var/log/apache2/access.log
+bantime = 86400
+maxretry = 1
+
+[apache-noscript]
+enabled = false
+port = http,https
+logpath = /var/log/apache2/error.log
+maxretry = 6
+
+[apache-overflows]
+enabled = false
+port = http,https
+logpath = /var/log/apache2/error.log
+maxretry = 2
+
+# ===== FTP PROTECTION =====
+[vsftpd]
+enabled = false
+port = ftp,ftp-data,ftps,ftps-data
+logpath = /var/log/vsftpd.log
+maxretry = 3
+bantime = 3600
+
+# ===== MAIL SERVER PROTECTION =====
+[postfix]
+enabled = true
+port = smtp,465,submission
+logpath = /var/log/mail.log
+backend = %(postfix_backend)s
+maxretry = 3
+
+[postfix-sasl]
+enabled = true
+port = smtp,465,submission,imap,imaps,pop3,pop3s
+logpath = /var/log/mail.log
+backend = %(postfix_backend)s
+maxretry = 3
+
+# ===== DATABASE PROTECTION =====
+[mysqld-auth]
+enabled = false
+port = 3306
+logpath = /var/log/mysql/error.log
+maxretry = 3
+bantime = 3600
+
+[postgresql]
+enabled = false
+port = 5432
+logpath = /var/log/postgresql/postgresql-*-main.log
+maxretry = 3
+
+# ===== RDP PROTECTION =====
+[xrdp]
+enabled = false
+port = 3389
+logpath = /var/log/xrdp.log
+maxretry = 3
+bantime = 86400
+
+# ===== CUSTOM HACKEDSSH FILTER =====
+[hackedssh]
+enabled = true
+port = ssh,http,https
+logpath = /var/log/syslog
+backend = systemd
+maxretry = 5
+findtime = 600
+bantime = 86400
+filter = hackedssh
+
+# ===== RECIDIVE (Repeat offenders) =====
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+bantime = 604800  ; 1 week
+findtime = 86400  ; 1 day
+maxretry = 3
+

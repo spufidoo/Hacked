@@ -1,0 +1,262 @@
+================================================================================
+  QUICK GUIDE: Installing HackedSSH on Heimdall (Raspberry Pi)
+================================================================================
+
+OPTION 1: AUTOMATED INSTALLATION (Recommended)
+===============================================
+
+From Thor (or your current machine):
+-------------------------------------
+
+1. Copy files to Heimdall:
+   
+   scp -r /home/marcus/Code/python/Hacked pi@heimdall:~/
+   
+   Or use rsync (better):
+   
+   rsync -avz --progress /home/marcus/Code/python/Hacked/ pi@heimdall:~/Hacked/
+
+2. SSH into Heimdall:
+   
+   ssh pi@heimdall
+
+3. Run the automated installer:
+   
+   cd ~/Hacked
+   sudo bash scripts/install_on_raspberry_pi.sh
+
+4. Follow the prompts and you're done!
+
+================================================================================
+
+OPTION 2: MANUAL INSTALLATION
+==============================
+
+On Heimdall:
+------------
+
+1. Update system:
+   sudo apt update && sudo apt upgrade -y
+
+2. Install Python dependencies:
+   sudo pip3 install folium geoip2 jinja2 systemd-python configparser
+
+3. Install web server:
+   sudo apt install nginx -y
+   sudo systemctl enable nginx
+   sudo systemctl start nginx
+
+4. Install mail server:
+   sudo apt install postfix mailutils -y
+
+5. Install security tools:
+   cd ~/Hacked
+   sudo bash scripts/install_security_tools.sh
+
+6. Install HackedSSH service:
+   sudo bash scripts/install_hackedssh_service.sh
+
+7. Configure for Heimdall:
+   sudo nano /usr/local/bin/HackedSSH.ini
+   
+   Update:
+   sender_email = heimdall@davage.me
+   hostname = heimdall.local
+   report_url = http://heimdall.local/HackedSSH_Report.html
+
+8. Test:
+   sudo systemctl start hackedssh.service
+   sudo journalctl -u hackedssh.service -f
+
+================================================================================
+
+FIREWALL CONFIGURATION (IMPORTANT!)
+====================================
+
+Heimdall is a gateway - be careful with firewall!
+
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw default allow routed        # CRITICAL for gateway!
+
+sudo ufw allow from 192.168.1.0/24 to any port 22  # SSH from local network
+sudo ufw allow 80/tcp                # HTTP
+sudo ufw allow 443/tcp               # HTTPS
+
+# If Heimdall is DNS server:
+sudo ufw allow 53/tcp
+sudo ufw allow 53/udp
+
+# If Heimdall is DHCP server:
+sudo ufw allow 67/udp
+sudo ufw allow 68/udp
+
+sudo ufw enable
+sudo ufw status verbose
+
+================================================================================
+
+TESTING
+=======
+
+1. Test HackedSSH:
+   sudo python3 /usr/local/bin/HackedSSH.py --debug
+
+2. Check web report:
+   http://heimdall.local/HackedSSH_Report.html
+
+3. Test email:
+   echo "Test" | mail -s "Heimdall Test" marcus@davage.me
+
+4. Check service:
+   sudo systemctl status hackedssh.timer
+   sudo systemctl list-timers hackedssh.timer
+
+5. View logs:
+   sudo journalctl -u hackedssh.service -f
+
+================================================================================
+
+MONITORING HEIMDALL
+===================
+
+Check temperature (important for Pi!):
+   vcgencmd measure_temp
+
+Monitor resources:
+   htop
+   free -h
+   df -h
+
+Run monitoring script:
+   ~/monitor_heimdall.sh
+
+Check Fail2Ban:
+   sudo fail2ban-client status
+   sudo fail2ban-client status sshd
+
+================================================================================
+
+USEFUL COMMANDS
+===============
+
+# Service management
+sudo systemctl status hackedssh.timer
+sudo systemctl start hackedssh.service  # Run manually
+sudo systemctl restart hackedssh.service
+sudo journalctl -u hackedssh.service -f
+
+# System monitoring
+vcgencmd measure_temp                   # Temperature
+~/monitor_heimdall.sh                   # Full status
+htop                                    # Process monitor
+df -h                                   # Disk usage
+
+# Email testing
+echo "Test" | mail -s "Test" marcus@davage.me
+sudo tail -f /var/log/mail.log
+
+# Firewall
+sudo ufw status verbose
+sudo ufw allow 8080/tcp
+sudo ufw delete [rule_number]
+
+# Fail2Ban
+sudo fail2ban-client status
+sudo fail2ban-client status sshd
+sudo fail2ban-client set sshd unbanip <IP>
+
+================================================================================
+
+TROUBLESHOOTING
+===============
+
+Service won't start:
+   sudo journalctl -u hackedssh.service -n 100
+   sudo systemctl status hackedssh.service
+
+Email not sending:
+   sudo systemctl status postfix
+   sudo tail -f /var/log/mail.log
+   mailq
+
+High temperature:
+   vcgencmd measure_temp
+   # If >80°C: improve cooling, reduce services
+
+Disk full:
+   df -h
+   sudo journalctl --vacuum-size=50M
+   sudo apt clean
+
+Check dependencies:
+   pip3 list | grep -E 'folium|geoip2|jinja2'
+
+================================================================================
+
+UPDATING HACKEDSSH ON HEIMDALL
+===============================
+
+From Thor:
+   cd /home/marcus/Code/python/Hacked
+   rsync -avz --progress /home/marcus/Code/python/Hacked/ pi@heimdall:~/Hacked/
+
+On Heimdall:
+   cd ~/Hacked
+   sudo bash scripts/install_hackedssh_service.sh
+   sudo systemctl daemon-reload
+   sudo systemctl restart hackedssh.service
+
+================================================================================
+
+IMPORTANT NOTES
+===============
+
+1. Heimdall is gateway - test changes carefully!
+2. Monitor temperature regularly (should stay <80°C)
+3. Check disk space weekly
+4. Keep system updated: sudo apt update && sudo apt upgrade
+5. Regular backups are essential
+6. Use quality SD card or consider USB/SSD boot
+7. Consider UPS for power protection
+
+================================================================================
+
+FILE LOCATIONS
+==============
+
+Configuration:     /usr/local/bin/HackedSSH.ini
+Scripts:          /usr/local/bin/HackedSSH.py
+Web Reports:      /var/www/html/HackedSSH_Report.html
+Service Files:    /etc/systemd/system/hackedssh.*
+Logs:             sudo journalctl -u hackedssh.service
+
+================================================================================
+
+DOCUMENTATION
+=============
+
+Full guide:       ~/Hacked/RASPBERRY_PI_INSTALL.md
+Implementation:   ~/Hacked/IMPLEMENTATION_GUIDE.md
+README:           ~/Hacked/README.md
+Session notes:    ~/Hacked/SECURITY_ENHANCEMENT_SESSION.md
+
+================================================================================
+
+SUPPORT
+=======
+
+Check logs:       sudo journalctl -t HackedSSH -f
+System audit:     sudo bash ~/Hacked/scripts/system_security_audit.sh
+Temperature:      vcgencmd measure_temp
+Status script:    ~/monitor_heimdall.sh
+
+================================================================================
+
+After installation, your nightly security reports will be at:
+http://heimdall.local/HackedSSH_Report.html
+
+You'll receive daily emails at 1:00 AM with comprehensive security summaries!
+
+================================================================================
+

@@ -1,0 +1,151 @@
+# Hardened SSH Configuration for Thor
+# Location: /etc/ssh/sshd_config
+# After making changes, test with: sudo sshd -t
+# Then restart SSH: sudo systemctl restart sshd
+
+# ===== BASIC SETTINGS =====
+# Use Protocol 2 only (more secure than Protocol 1)
+Protocol 2
+
+# Change default port (security through obscurity - reduces automated attacks)
+# Uncomment and change to a non-standard port
+# Port 2222
+
+# Listen on specific interfaces only (optional - restrict to specific IPs)
+# ListenAddress 0.0.0.0
+# ListenAddress ::
+
+# ===== AUTHENTICATION SETTINGS =====
+# Disable root login - CRITICAL SECURITY MEASURE
+PermitRootLogin no
+
+# Use public key authentication only (most secure)
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+
+# If you need password auth temporarily, use this instead:
+# PasswordAuthentication yes
+# But set it to 'no' after setting up SSH keys
+
+# Disable other authentication methods
+ChallengeResponseAuthentication no
+KerberosAuthentication no
+GSSAPIAuthentication no
+
+# ===== LOGIN RESTRICTIONS =====
+# Limit authentication attempts
+MaxAuthTries 3
+MaxSessions 2
+
+# Set login grace time (seconds)
+LoginGraceTime 30
+
+# Allow only specific users (IMPORTANT: Replace 'marcus' with your username)
+AllowUsers marcus
+# Or use groups instead:
+# AllowGroups ssh-users
+
+# Deny specific users
+# DenyUsers root admin test
+
+# ===== KEY EXCHANGE & ENCRYPTION =====
+# Use strong ciphers only
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+
+# Use strong MACs only
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+
+# Use strong Key Exchange algorithms
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256
+
+# ===== SECURITY OPTIONS =====
+# Disable X11 forwarding (unless you need it)
+X11Forwarding no
+
+# Disable agent forwarding (unless you need it)
+AllowAgentForwarding no
+
+# Disable TCP forwarding (unless you need it)
+AllowTcpForwarding no
+
+# Disable gateway ports
+GatewayPorts no
+
+# Enable strict mode (checks file permissions)
+StrictModes yes
+
+# Disable user environment processing
+PermitUserEnvironment no
+
+# Disable host-based authentication
+HostbasedAuthentication no
+IgnoreRhosts yes
+
+# ===== SESSION SETTINGS =====
+# Set idle timeout (5 minutes = 300 seconds)
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Print last login information
+PrintLastLog yes
+
+# Show message of the day
+PrintMotd yes
+
+# ===== LOGGING =====
+# Use verbose logging for security monitoring
+LogLevel VERBOSE
+# For even more detailed logging use:
+# LogLevel DEBUG3
+
+# Syslog facility
+SyslogFacility AUTH
+
+# ===== SUBSYSTEMS =====
+# SFTP subsystem (required for file transfers)
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+# ===== BANNER =====
+# Display warning banner before login
+Banner /etc/ssh/sshd_banner
+
+# ===== TWO-FACTOR AUTHENTICATION (OPTIONAL) =====
+# Uncomment these lines after installing and configuring Google Authenticator
+# AuthenticationMethods publickey,keyboard-interactive
+# ChallengeResponseAuthentication yes
+# UsePAM yes
+
+# ===== ADDITIONAL SECURITY =====
+# Ignore .rhosts files
+IgnoreRhosts yes
+
+# Don't read ~/.ssh/environment
+PermitUserEnvironment no
+
+# Compression (disable for better security, enable for slow connections)
+Compression no
+
+# Maximum amount of data that may be transmitted before the session key is renegotiated
+RekeyLimit 512M 1h
+
+# ===== MATCH BLOCKS (OPTIONAL) =====
+# Example: Allow password auth only from specific IPs
+# Match Address 192.168.1.0/24
+#     PasswordAuthentication yes
+
+# Example: Restrict specific users to SFTP only
+# Match User sftpuser
+#     ForceCommand internal-sftp
+#     PasswordAuthentication no
+#     ChrootDirectory /home/sftpuser
+#     PermitTunnel no
+#     AllowAgentForwarding no
+#     AllowTcpForwarding no
+#     X11Forwarding no
+
+# ===== END OF CONFIGURATION =====
+# Remember to test configuration before restarting SSH:
+# sudo sshd -t
+# sudo systemctl restart sshd
+

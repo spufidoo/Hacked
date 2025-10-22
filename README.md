@@ -1,47 +1,413 @@
-# HackedSSH
-SSH Logon Attempts
+# HackedSSH - Advanced Security Monitoring System
 
-Welcome to my little "SSH Logon Attempts" project.
+![Security](https://img.shields.io/badge/Security-Enhanced-green)
+![Python](https://img.shields.io/badge/Python-3.8+-blue)
+![License](https://img.shields.io/badge/License-MIT-yellow)
 
-The present iteration is a Python program that reads SSH logon attempts from journal logs, and bundles them into a nice little HTML report, with collapsible fields and nice little map.
+A comprehensive security monitoring and reporting system that tracks failed and **successful** login attempts, detects various cyber attacks, and provides automated alerts for Thor (your Ubuntu server).
 
-The program is invoked thus:
-    python HackedSSH.py                           -- The default. Process yesterday's logs
-    python HackedSSH.py {--from_date [yesterday | '2024-05-16'] --to_date [today | '2024-05-16'] --email to_email_address }
+## 🎯 Features
 
-The html report output looks like this:
-![image](https://github.com/user-attachments/assets/47e30a0c-79a1-4412-9e10-8bccec5a7a76)
-and has collapsible Country and User fields, and a link to abuseipdb for each hostile IP address.
-There is also a nice map with IP geo-locations.
+### Core Monitoring
+- ✅ **SSH Login Monitoring** - Failed and successful attempts
+- ✅ **Multi-Service Support** - SSH, RDP, FTP, MySQL, Nginx, Apache, SMTP, and more
+- ✅ **Successful Login Detection** - **NEW!** Critical security feature
+- ✅ **Real-time Critical Alerts** - Immediate email notifications for security events
+- ✅ **Severity-based Classification** - Critical, High, Medium, Low event categorization
+- ✅ **Geographic Tracking** - IP geolocation with interactive maps
+- ✅ **Attack Pattern Detection** - Web attacks, SQL injection, port scanning, privilege escalation
 
+### Enhanced Security Detection
+- 🔍 **Web Attacks**: SQL injection, path traversal, web shells, scanner detection
+- 🔍 **Privilege Escalation**: sudo/su attempts (failed and successful)
+- 🔍 **Network Attacks**: Port scanning, SYN flooding
+- 🔍 **Database Attacks**: MySQL, PostgreSQL, MongoDB authentication failures
+- 🔍 **Account Enumeration**: Invalid user detection, root login attempts
+- 🔍 **Brute Force Detection**: Multiple authentication failures
 
-## Configuration
+### Reporting & Alerts
+- 📊 **Beautiful HTML Reports** with collapsible sections
+- 📧 **Email Notifications** with severity indicators
+- 🗺️ **Interactive Maps** showing attack origins
+- 📈 **Statistics Dashboard** - Countries, cities, users, IPs
+- 🚨 **Critical Event Highlighting** - Immediate attention to successful logins
 
-To run this project, you need to create a configuration file with your sensitive information.
+## 🚀 Quick Start
 
-1. Copy the template file to create your configuration file:
+### Installation
 
-    ```bash
-    cp config.ini.template config.ini
-    ```
-
-2. Edit the `config.ini` file and fill in your details (email addresses, SMTP credentials, etc.).
-
-3. Ensure the `config.ini` file is not added to version control by verifying it is listed in `.gitignore`.
-
-## Prerequisites
+1. **Clone the repository:**
+```bash
+cd /home/marcus/Code/python
+git clone <your-repo-url> Hacked
+cd Hacked
 ```
-import folium
-import subprocess
-import re
-import os
-import argparse
-import datetime
-from collections import defaultdict
-from geoip2.database import Reader
-from countries import country_names
-from jinja2 import Environment, FileSystemLoader
-from systemd import journal
-import configparser
+
+2. **Install dependencies:**
+```bash
+sudo pip3 install folium geoip2 jinja2 systemd-python configparser
 ```
-The GeoIP database files must also be present in the same directory as the program.
+
+3. **Configure email settings:**
+```bash
+cp config.ini.template HackedSSH.ini
+nano HackedSSH.ini
+# Edit sender_email, recipient_email, and URLs
+```
+
+4. **Run manually:**
+```bash
+sudo python3 HackedSSH.py
+```
+
+5. **Install as automated service:**
+```bash
+sudo bash scripts/install_hackedssh_service.sh
+```
+
+## 📋 Usage
+
+### Basic Usage
+```bash
+# Process yesterday's logs (default)
+sudo python3 HackedSSH.py
+
+# Specify date range
+sudo python3 HackedSSH.py --from_date '2024-05-16' --to_date '2024-05-17'
+
+# Send to different email
+sudo python3 HackedSSH.py --email custom@email.com
+
+# Debug mode
+sudo python3 HackedSSH.py --debug
+```
+
+### Automated Daily Reports
+
+The system includes systemd timer for automated daily reports at 1:00 AM:
+
+```bash
+# Check timer status
+sudo systemctl status hackedssh.timer
+
+# View next scheduled run
+sudo systemctl list-timers hackedssh.timer
+
+# Run report manually
+sudo systemctl start hackedssh.service
+
+# View logs
+sudo journalctl -u hackedssh.service
+```
+
+## 🔒 Security Hardening
+
+### Step 1: Install Security Tools
+
+Run the comprehensive security tools installer:
+```bash
+sudo bash scripts/install_security_tools.sh
+```
+
+This installs:
+- **Fail2Ban** - Intrusion prevention
+- **UFW** - Firewall management
+- **Auditd** - System call auditing
+- **AIDE** - File integrity monitoring
+- **RKHunter** - Rootkit detection
+- **ClamAV** - Antivirus protection
+- **Lynis** - Security auditing
+- And more...
+
+### Step 2: Configure SSH (Critical!)
+
+**Copy and customize the hardened SSH configuration:**
+```bash
+# Backup original
+sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+
+# Review and customize hardened config
+sudo nano config_examples/sshd_config.hardened
+
+# Apply (carefully!)
+sudo cp config_examples/sshd_config.hardened /etc/ssh/sshd_config
+
+# IMPORTANT: Test configuration before restarting
+sudo sshd -t
+
+# If test passes, restart SSH
+sudo systemctl restart sshd
+```
+
+**Key SSH Security Settings:**
+- ✅ Disable root login: `PermitRootLogin no`
+- ✅ Use key-based auth only: `PasswordAuthentication no`
+- ✅ Limit authentication attempts: `MaxAuthTries 3`
+- ✅ Use strong ciphers and MACs
+- ✅ Set idle timeout
+- ✅ Optional: Change default port
+
+### Step 3: Configure Firewall
+
+```bash
+sudo bash scripts/setup_ufw_firewall.sh
+```
+
+This configures:
+- Default deny incoming
+- Allow SSH, HTTP, HTTPS
+- Rate limiting on SSH
+- Logging enabled
+
+### Step 4: Configure Fail2Ban
+
+```bash
+# Copy jail configuration
+sudo cp config_examples/fail2ban_jail.local /etc/fail2ban/jail.local
+
+# Copy custom filter
+sudo cp config_examples/fail2ban_filter_hackedssh.conf /etc/fail2ban/filter.d/hackedssh.conf
+
+# Edit email settings
+sudo nano /etc/fail2ban/jail.local
+
+# Restart Fail2Ban
+sudo systemctl restart fail2ban
+sudo systemctl enable fail2ban
+
+# Check status
+sudo fail2ban-client status
+```
+
+### Step 5: Configure Auditd
+
+```bash
+# Copy audit rules
+sudo cp config_examples/audit.rules /etc/audit/rules.d/audit.rules
+
+# Load rules
+sudo augenrules --load
+
+# Restart auditd
+sudo systemctl restart auditd
+
+# Verify rules
+sudo auditctl -l
+```
+
+### Step 6: Configure PAM (Optional but Recommended)
+
+```bash
+# Backup original files
+sudo cp /etc/pam.d/sshd /etc/pam.d/sshd.backup
+sudo cp /etc/pam.d/common-auth /etc/pam.d/common-auth.backup
+
+# Review PAM configurations
+cat config_examples/pam_sshd
+cat config_examples/pam_common-auth
+
+# Apply with caution - test in a safe environment first!
+```
+
+### Step 7: Run Security Audit
+
+```bash
+sudo bash scripts/system_security_audit.sh
+# Review the generated report
+```
+
+## 📊 Report Output
+
+The system generates:
+
+1. **HackedSSH_Report.html** - Main security report
+   - Summary statistics
+   - **Successful logins section** (highlighted in red if any detected)
+   - **Severity-based event classification**
+   - Failed attempts by country
+   - Failed attempts by user
+   - Links to AbuseIPDB for each IP
+
+2. **HackedSSH_Map.html** - Interactive map showing attack origins
+
+3. **Email alerts** - Immediate notifications for:
+   - Any successful login
+   - Critical security events
+   - High severity attacks
+
+## 🎨 Sample Report
+
+The HTML report includes:
+- 📊 Summary dashboard with total attempts, successful logins, critical events
+- 🚨 **Prominent successful login warnings** (red background)
+- 🌍 Country-by-country breakdown with IP details
+- 👤 User attempt statistics
+- 🗺️ Interactive geographic map
+- 📊 Severity-level event tables
+- 🔗 Links to AbuseIPDB for threat intelligence
+
+## 🔧 Configuration Files
+
+### HackedSSH.ini
+```ini
+[EMAIL]
+sender_email = odin@davage.me
+recipient_email = marcus@davage.me
+
+[WEB]
+hostname = home.davage.me
+report_url = http://home.davage.me/HackedSSH_Report.html
+local_url = http://odin.local/HackedSSH_Report.html
+```
+
+## 📁 Project Structure
+
+```
+Hacked/
+├── HackedSSH.py              # Main monitoring script
+├── HackedSSH.html            # HTML report template
+├── HackedSSH.ini             # Configuration file
+├── HackedSSH.js              # Express server (optional)
+├── HackedSSH.sh              # Shell wrapper
+├── countries.py              # Country code mappings
+├── GeoLite2-City.mmdb        # GeoIP database
+├── GeoLite2-Country.mmdb     # GeoIP database
+├── config_examples/          # Security configuration examples
+│   ├── sshd_config.hardened  # Hardened SSH config
+│   ├── sshd_banner           # SSH login banner
+│   ├── fail2ban_jail.local   # Fail2Ban configuration
+│   ├── fail2ban_filter_hackedssh.conf
+│   ├── pam_sshd              # PAM SSH configuration
+│   ├── pam_common-auth       # PAM authentication
+│   ├── pam_common-account    # PAM account management
+│   ├── security_limits.conf  # Resource limits
+│   ├── audit.rules           # Auditd rules
+│   ├── hackedssh.service     # Systemd service
+│   └── hackedssh.timer       # Systemd timer
+└── scripts/                  # Installation & management scripts
+    ├── install_hackedssh_service.sh
+    ├── install_security_tools.sh
+    ├── setup_ufw_firewall.sh
+    └── system_security_audit.sh
+```
+
+## 🚨 Critical Security Notes
+
+### ⚠️ BEFORE YOU START
+
+1. **Test SSH changes in a safe environment** - Lock yourself out at your own risk!
+2. **Always keep a backup SSH session open** when making SSH config changes
+3. **Test SSH config** with `sudo sshd -t` before restarting
+4. **Document your changes** - especially custom SSH ports or allowed users
+5. **Review logs regularly** - Security is an ongoing process
+
+### 🔑 Best Practices
+
+1. **Use SSH keys** instead of passwords
+2. **Enable 2FA** for critical accounts (Google Authenticator)
+3. **Change default SSH port** to reduce automated attacks
+4. **Limit SSH access** by IP when possible
+5. **Monitor logs daily** - Automated reports help!
+6. **Keep system updated** - `sudo apt update && sudo apt upgrade`
+7. **Regular security audits** - Run audit script weekly
+8. **Review Fail2Ban bans** - `sudo fail2ban-client status sshd`
+9. **Check successful logins** - **ANY unexpected login is critical**
+10. **Test backups** - Can you recover if attacked?
+
+## 📊 Attack Detection Coverage
+
+| Attack Type | Detection | Severity | Alert |
+|------------|-----------|----------|-------|
+| Successful SSH Login | ✅ | Critical | Email |
+| Successful Sudo | ✅ | Critical | Email |
+| Failed SSH Login | ✅ | Medium | Report |
+| SQL Injection | ✅ | High | Report |
+| Path Traversal | ✅ | High | Report |
+| Web Shell Upload | ✅ | Critical | Email |
+| Port Scanning | ✅ | High | Report |
+| Brute Force | ✅ | Medium | Report |
+| Account Enumeration | ✅ | Medium | Report |
+| Root Login Attempt | ✅ | Medium | Report |
+| Privilege Escalation | ✅ | High | Report |
+
+## 🛠️ Troubleshooting
+
+### No data in report
+```bash
+# Check if services are generating logs
+sudo journalctl -u ssh.service --since today
+
+# Run with debug mode
+sudo python3 HackedSSH.py --debug
+```
+
+### Email not sending
+```bash
+# Check sendmail configuration
+sudo sendmail -v marcus@davage.me < /dev/null
+
+# View HackedSSH logs
+sudo journalctl -t HackedSSH
+```
+
+### Timer not running
+```bash
+# Check timer status
+sudo systemctl status hackedssh.timer
+
+# Reload systemd
+sudo systemctl daemon-reload
+sudo systemctl restart hackedssh.timer
+```
+
+## 🔄 Updating GeoIP Databases
+
+GeoIP databases need periodic updates:
+```bash
+# Download new databases from MaxMind
+# (Requires free account at maxmind.com)
+wget https://download.maxmind.com/app/geoip_download?...
+```
+
+## 📈 Future Enhancements
+
+- [ ] Web dashboard for real-time monitoring
+- [ ] Machine learning for anomaly detection
+- [ ] Integration with threat intelligence feeds
+- [ ] Automated response actions (auto-ban, auto-alert)
+- [ ] Historical trending and analytics
+- [ ] Multi-server monitoring support
+- [ ] Mobile app notifications
+- [ ] Honeypot integration
+
+## 🤝 Contributing
+
+Contributions are welcome! Areas for improvement:
+- Additional attack pattern detection
+- More service integrations
+- Better visualization
+- Performance optimizations
+- Documentation improvements
+
+## 📝 License
+
+MIT License - Feel free to use and modify as needed.
+
+## 🙏 Acknowledgments
+
+- GeoIP data from MaxMind
+- AbuseIPDB for threat intelligence
+- Folium for mapping
+- The security community for best practices
+
+## 📧 Contact
+
+Marcus Davage - marcus@davage.me
+
+## ⚠️ Disclaimer
+
+This tool is for monitoring and detecting security threats on systems you own or have permission to monitor. Always ensure you comply with local laws and regulations regarding system monitoring and logging.
+
+---
+
+**Remember**: Security is not a destination, it's a journey. Stay vigilant! 🛡️

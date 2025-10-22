@@ -1,0 +1,83 @@
+From: odin@davage.me
+To: marcus@davage.me
+Subject: *** ALERT *** Thor Security Report - CRITICAL EVENTS DETECTED
+Priority: urgent
+X-Priority: 1
+
+Security Report for Thor
+Generated: 2024-10-22 08:00:15
+Period: 2024-10-21 to 2024-10-22
+
+======================================================================
+SUMMARY
+======================================================================
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+*** CRITICAL ALERTS DETECTED ***
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+[CRITICAL] Successful Logins: 2
+[CRITICAL] Critical Events: 3
+[WARNING] High Severity Events: 5
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+Total Failed Attempts: 1247
+Successful Logins: 2
+Unique IP Addresses: 156
+Countries Involved: 23
+Users Targeted: 42
+
+Severity Breakdown:
+  Critical: 3
+  High: 5
+  Medium: 89
+  Low: 1150
+
+======================================================================
+SUCCESSFUL LOGINS (REQUIRES IMMEDIATE ATTENTION!)
+======================================================================
+  >> User: marcus, IP: 192.168.1.100 (United Kingdom), Count: 1
+  >> User: admin, IP: 185.220.101.45 (Germany), Count: 1
+
+======================================================================
+TOP 10 ATTACKING COUNTRIES
+======================================================================
+   1. China                          -   428 attempts
+   2. Russian Federation             -   215 attempts
+   3. United States                  -   187 attempts
+   4. India                          -   143 attempts
+   5. Brazil                         -    98 attempts
+   6. Vietnam                        -    67 attempts
+   7. Indonesia                      -    54 attempts
+   8. Ukraine                        -    32 attempts
+   9. Turkey                         -    15 attempts
+  10. Poland                         -     8 attempts
+
+======================================================================
+TOP 10 TARGETED USERS
+======================================================================
+   1. root                  -   542 attempts
+   2. admin                 -   287 attempts
+   3. user                  -   124 attempts
+   4. test                  -    89 attempts
+   5. ubuntu                -    67 attempts
+   6. postgres              -    45 attempts
+   7. mysql                 -    32 attempts
+   8. oracle                -    28 attempts
+   9. ftpuser               -    19 attempts
+  10. guest                 -    14 attempts
+
+======================================================================
+FULL REPORT
+======================================================================
+External: http://home.davage.me/HackedSSH_Report.html
+Local: http://odin.local/HackedSSH_Report.html
+
+View the full report for:
+  - Interactive map of attack origins
+  - Detailed breakdown by country and IP
+  - Complete severity analysis
+  - All attack attempts with timestamps
+
+======================================================================
+This is an automated report from HackedSSH
+======================================================================

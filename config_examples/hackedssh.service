@@ -1,0 +1,35 @@
+[Unit]
+Description=HackedSSH Security Report Generator
+Documentation=https://github.com/yourusername/HackedSSH
+After=network.target syslog.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# Paths - adjust based on installation location
+WorkingDirectory=/usr/local/bin
+ExecStart=/usr/bin/python3 /usr/local/bin/HackedSSH.py
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=HackedSSH
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/www/html /var/log
+
+# Restart policy (for oneshot, this doesn't restart but logs on failure)
+# RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+
