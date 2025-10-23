@@ -5,6 +5,7 @@ import folium
 import argparse
 import subprocess
 import configparser
+import getpass
 from jinja2 import Environment, FileSystemLoader
 from systemd import journal
 from datetime import datetime, timedelta
@@ -13,7 +14,8 @@ from collections import defaultdict
 from geoip2.database import Reader
 
 # Global Variables
-if os.getlogin() == 'root':
+# Check if we're running in a system-wide installation
+if os.path.exists('/usr/local/bin/HackedSSH.ini'):
     ROOT = '/usr/local/bin'
 else:
     ROOT = '.'
@@ -97,9 +99,45 @@ def extract_attack_attempts(from_date, to_date,debug=False):
                 print(f"{line}")  # Debug output to verify each line
 
     except Exception as e:
-        journal.send(message=f"Error reading journal logs: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        journal.send(MESSAGE=f"Error reading journal logs: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
     
     return attack_attempts, TOTAL_ATTEMPTS
+
+# Function to extract UFW firewall blocks from kernel logs
+def extract_ufw_blocks(from_date, to_date, debug=False):
+    ufw_blocks = defaultdict(lambda: defaultdict(int))  # {ip: {port: count}}
+    TOTAL_UFW_BLOCKS = 0
+    
+    try:
+        # Fetch kernel logs for UFW blocks
+        kernel_logs = subprocess.check_output(
+            [
+                "journalctl",
+                "_TRANSPORT=kernel",
+                f"--since={from_date}",
+                f"--until={to_date}",
+                "--no-pager",
+            ]
+        ).decode("utf-8")
+        
+        # Pattern to match UFW BLOCK entries
+        # Example: kernel: [UFW BLOCK] ... SRC=1.2.3.4 ... DPT=22 ...
+        ufw_pattern = re.compile(r'\[UFW BLOCK\].*SRC=([0-9.]+).*DPT=(\d+)')
+        
+        for line in kernel_logs.splitlines():
+            match = ufw_pattern.search(line)
+            if match:
+                ip_address = match.group(1)
+                port = match.group(2)
+                ufw_blocks[ip_address][port] += 1
+                TOTAL_UFW_BLOCKS += 1
+                if debug:
+                    print(f"UFW BLOCK: {ip_address}:{port}")
+        
+    except Exception as e:
+        journal.send(MESSAGE=f"Error reading UFW logs: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+    
+    return ufw_blocks, TOTAL_UFW_BLOCKS
 
 # Function to get country from IP address
 def get_country_from_ip(ip_address):
@@ -110,7 +148,9 @@ def get_country_from_ip(ip_address):
         reader.close()
         return country
     except Exception as e:
-        journal.send(message=f"Error getting country from IP: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        # IP not in database is normal, don't log as error
+        if "not in the database" not in str(e):
+            journal.send(MESSAGE=f"Error getting country from IP {ip_address}: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
         return "Unknown"
 
 # Function to get city and coordinates from IP address
@@ -124,7 +164,9 @@ def get_city_and_coords_from_ip(ip_address):
         reader.close()
         return city, lat, lon
     except Exception as e:
-        journal.send(message=f"Error getting city and coordinates from IP: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        # IP not in database is normal, don't log as error
+        if "not in the database" not in str(e):
+            journal.send(MESSAGE=f"Error getting city from IP {ip_address}: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
         return "Unknown", None, None
 
 # Function to get city from IP address
@@ -136,11 +178,13 @@ def get_city_from_ip(ip_address):
         reader.close()
         return city
     except Exception as e:
-        journal.send(message=f"Error getting city from IP: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        # IP not in database is normal, don't log as error
+        if "not in the database" not in str(e):
+            journal.send(MESSAGE=f"Error getting city from IP {ip_address}: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
         return "Unknown"
 
 # Function to generate HTML report
-def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, from_date, to_date,debug=False):
+def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, from_date, to_date,debug=False):
     env = Environment(loader=FileSystemLoader(ROOT))
     template = env.get_template(HACKER_TEMPLATE)
     m = folium.Map(location=[0, 0], zoom_start=2)  # Create a map object
@@ -166,14 +210,43 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, from_date, to_date,debug=
             folium.Marker([lat, lon], popup=f"City: {city}\nIP Address: {ip_address}").add_to(m)  # Add marker to the map
 
     m.save(HACKER_MAP)  # Save the map to an HTML file
-    journal.send(message=f"Map template {ROOT}/{HACKER_TEMPLATE} saved to {HACKER_MAP}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    journal.send(MESSAGE=f"Map template {ROOT}/{HACKER_TEMPLATE} saved to {HACKER_MAP}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
 
     country_attempts = sorted(country_attempts.items(), key=lambda x: x[1], reverse=True)
     user_attempts = sorted(user_attempts.items(), key=lambda x: x[0])
     report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Process UFW blocks by country and port
+    ufw_country_attempts = defaultdict(int)
+    ufw_port_summary = defaultdict(int)
+    ufw_details = {}
+    
+    for ip_address, ports in ufw_blocks.items():
+        country = get_country_from_ip(ip_address)
+        country_name = country_names.get(country, "Unknown")
+        city = get_city_from_ip(ip_address)
+        
+        total_blocks = sum(ports.values())
+        ufw_country_attempts[country_name] += total_blocks
+        
+        for port, count in ports.items():
+            ufw_port_summary[port] += count
+        
+        ufw_details[ip_address] = {
+            'country': country_name,
+            'city': city,
+            'ports': dict(ports),
+            'total': total_blocks
+        }
+    
+    ufw_country_attempts = sorted(ufw_country_attempts.items(), key=lambda x: x[1], reverse=True)
+    ufw_port_summary = sorted(ufw_port_summary.items(), key=lambda x: x[1], reverse=True)
+    ufw_details = dict(sorted(ufw_details.items(), key=lambda x: x[1]['total'], reverse=True))
 
     html_content = template.render(
         TOTAL_ATTEMPTS=TOTAL_ATTEMPTS,
+        TOTAL_SUCCESS=0,  # Placeholder for future enhancement
+        TOTAL_UFW_BLOCKS=TOTAL_UFW_BLOCKS,
         ip_count=len(ssh_attempts),
         country_count=len(country_attempts),
         city_count=len(city_attempts),
@@ -181,6 +254,14 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, from_date, to_date,debug=
         country_attempts=country_attempts,
         user_attempts=user_attempts,
         country_details=country_details,
+        ufw_blocks_count=len(ufw_blocks),
+        ufw_country_attempts=ufw_country_attempts,
+        ufw_port_summary=ufw_port_summary,
+        ufw_details=ufw_details,
+        successful_logins={},  # Placeholder for future enhancement
+        successful_country_attempts=[],  # Placeholder for future enhancement
+        severity_critical=[],  # Placeholder for future enhancement
+        severity_high=[],  # Placeholder for future enhancement
         report_time=report_time,
         from_date=from_date,
         to_date=to_date
@@ -188,16 +269,67 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, from_date, to_date,debug=
 
     with open(HACKER_REPORT, "w") as f:
         f.write(html_content)
-    journal.send(message=f"Report saved to {HACKER_REPORT}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    journal.send(MESSAGE=f"Report saved to {HACKER_REPORT}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    
+    # Return statistics for email summary
+    return {
+        'ip_count': len(ssh_attempts),
+        'country_count': len(country_attempts),
+        'user_count': len(user_attempts),
+        'country_attempts': country_attempts,
+        'user_attempts': user_attempts,
+        'ufw_blocks_count': len(ufw_blocks),
+        'ufw_country_attempts': ufw_country_attempts,
+        'ufw_port_summary': ufw_port_summary
+    }
 
 # Function to send an email with the report link using Postfix
-def send_email(report_url, recipient_email,debug=False):
+def send_email(report_url, recipient_email, total_attempts, ip_count, country_count, user_count, 
+               top_countries, top_users, total_ufw_blocks, ufw_blocks_count, ufw_top_countries, 
+               ufw_top_ports, from_date, to_date, debug=False):
     hostname = subprocess.check_output("hostname").decode("utf-8").strip()
 
-    # Create email headers and body
-    body           = f"Please find the {hostname} SSH logon attempts report at the following link: {report_url}"
-    subject        = f"{hostname} SSH Logon Attempts Report"
-    #sender_email   = f"{hostname} <{hostname}@{server}>"
+    # Create email headers and body with summary
+    subject = f"{hostname} Security Report"
+    
+    body = f"""Security Report for {hostname}
+Period: {from_date} to {to_date}
+
+=== AUTHENTICATION FAILURES ===
+Total Login Attempts: {total_attempts}
+Unique IP Addresses: {ip_count}
+Countries: {country_count}
+User IDs Targeted: {user_count}
+
+=== TOP 10 COUNTRIES (Authentication) ===
+"""
+    # Add top 10 countries
+    for i, (country, count) in enumerate(top_countries[:10], 1):
+        body += f"{i:2d}. {country:30s} : {count:6d} attempts\n"
+    
+    body += "\n=== TOP 10 TARGETED USER IDs ===\n"
+    # Add top 10 users
+    for i, (user, count) in enumerate(top_users[:10], 1):
+        body += f"{i:2d}. {user:20s} : {count:6d} attempts\n"
+    
+    body += f"\n=== BLOCKED BY UFW FIREWALL ===\n"
+    body += f"Total Blocks: {total_ufw_blocks}\n"
+    body += f"Unique IPs: {ufw_blocks_count}\n"
+    
+    if ufw_top_countries:
+        body += "\n=== TOP 10 COUNTRIES (UFW Blocks) ===\n"
+        for i, (country, count) in enumerate(ufw_top_countries[:10], 1):
+            body += f"{i:2d}. {country:30s} : {count:6d} blocks\n"
+    
+    if ufw_top_ports:
+        body += "\n=== TOP TARGETED PORTS ===\n"
+        port_names = {'22': 'SSH', '80': 'HTTP', '443': 'HTTPS', '3389': 'RDP', 
+                      '3306': 'MySQL', '5432': 'PostgreSQL', '21': 'FTP', '25': 'SMTP'}
+        for i, (port, count) in enumerate(ufw_top_ports[:10], 1):
+            port_name = port_names.get(port, f'Port {port}')
+            body += f"{i:2d}. {port_name:20s} : {count:6d} blocks\n"
+    
+    body += f"\n\nFull detailed report: {report_url}\n"
     
     email_content  = f"From: {sender_email}\n"
     email_content += f"To: {recipient_email}\n"
@@ -205,7 +337,7 @@ def send_email(report_url, recipient_email,debug=False):
     email_content += body
 
     try:
-        # Run the sendmail command
+        # Run the sendmail command with a timeout
         process = subprocess.Popen(
             ["/usr/sbin/sendmail", "-t", "-oi"],
             stdin=subprocess.PIPE,
@@ -213,30 +345,35 @@ def send_email(report_url, recipient_email,debug=False):
             stderr=subprocess.PIPE
         )
         
-        # Capture the stdout and stderr
-        stdout, stderr = process.communicate(email_content.encode('utf-8'))
+        # Capture the stdout and stderr with 30 second timeout
+        try:
+            stdout, stderr = process.communicate(email_content.encode('utf-8'), timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            journal.send(MESSAGE=f"Email sending timed out after 30 seconds to {recipient_email}", 
+                        SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+            return
 
         # Check if sendmail command was successful
         if process.returncode == 0:
-            journal.send(message=f"Email sent to {recipient_email}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+            journal.send(MESSAGE=f"Email sent to {recipient_email}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
         else:
             # Log the error details if the command failed
-            journal.send(message=f"Failed to send email to {recipient_email}. Error: {stderr.decode('utf-8')}",
+            journal.send(MESSAGE=f"Failed to send email to {recipient_email}. Error: {stderr.decode('utf-8')}",
                          SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
     except Exception as e:
         # Log any exceptions that occur
-        journal.send(message=f"Exception occurred while sending email: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        journal.send(MESSAGE=f"Exception occurred while sending email: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
 
 # Main function
 def main():
-    journal.send(message=f"Started SSH report generation by {os.getlogin()}...", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
-<<<<<<< HEAD
+    try:
+        user = getpass.getuser()
+    except:
+        user = os.getenv('USER', 'system')
+    journal.send(MESSAGE=f"Started SSH report generation by {user}...", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
 
-    parser = argparse.ArgumentParser(description="Process SSH logon attempts from journal logs.")
-    parser.add_argument("--from_date",required=False,type=str,default=datetime.now().date() - timedelta(days=1),help="Start date for the journal logs (e.g., '2024-05-16').")
-    parser.add_argument("--to_date",required=False,type=str,default=datetime.now().date(),help="End date for the journal logs (e.g., '2024-05-17').")
-    parser.add_argument("--email",required=False,type=str,default=recipient_email,help="Recipient email address to send the report to.")
-=======
     parser = argparse.ArgumentParser(
         description="Process SSH logon attempts from journal logs."
     )
@@ -261,22 +398,44 @@ def main():
         default=recipient_email,
         help="Recipient email address to send the report to.",
     )
->>>>>>> f45a881 (Performance fixes and regex parsing fixes.)
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for more verbose output")
+    parser.add_argument("--no-email", action="store_true", help="Skip sending email (generate report only)")
 
     args = parser.parse_args()
     
+    # Extract both SSH authentication failures and UFW firewall blocks
     attack_attempts, TOTAL_ATTEMPTS = extract_attack_attempts(args.from_date, args.to_date,debug=args.debug)
-    generate_html_report(attack_attempts, TOTAL_ATTEMPTS, args.from_date, args.to_date,debug=args.debug)
+    ufw_blocks, TOTAL_UFW_BLOCKS = extract_ufw_blocks(args.from_date, args.to_date,debug=args.debug)
+    
+    stats = generate_html_report(attack_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, 
+                                 args.from_date, args.to_date,debug=args.debug)
 
-    # Email the report link
-<<<<<<< HEAD
-=======
-    # report_url = "http://home.davage.me/HackedSSH_Report.html"
->>>>>>> f45a881 (Performance fixes and regex parsing fixes.)
-    send_email(report_url, args.email,debug=args.debug)
+    # Email the report link with summary statistics (unless --no-email flag is set)
+    if not args.no_email:
+        try:
+            send_email(
+                report_url, 
+                args.email, 
+                TOTAL_ATTEMPTS,
+                stats['ip_count'],
+                stats['country_count'],
+                stats['user_count'],
+                stats['country_attempts'],
+                stats['user_attempts'],
+                TOTAL_UFW_BLOCKS,
+                stats['ufw_blocks_count'],
+                stats['ufw_country_attempts'],
+                stats['ufw_port_summary'],
+                args.from_date,
+                args.to_date,
+                debug=args.debug
+            )
+        except Exception as e:
+            journal.send(MESSAGE=f"Failed to send email: {e}. Report still generated at {report_url}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+    else:
+        journal.send(MESSAGE="Email skipped (--no-email flag set). Report available at: " + report_url, SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
 
-    journal.send(message="Report successfully generated and saved.", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    journal.send(MESSAGE="Report successfully generated and saved.", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
 
 if __name__ == "__main__":
     main()

@@ -7,80 +7,191 @@
     <title>Hacking Attempts</title>
     <link rel="icon" href="/images/favicon.ico" type="image/x-icon">
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background-color: #e9ecef;
-            color: #343a40;
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
 
-        h1, h2, h3 {
-            color: #495057;
+        body {
+            font-family: 'Share Tech Mono', monospace;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #0a0a0a 100%);
+            color: #00ff41;
+            padding: 20px;
+            min-height: 100vh;
+            position: relative;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                repeating-linear-gradient(
+                    0deg,
+                    rgba(0, 255, 65, 0.03) 0px,
+                    transparent 1px,
+                    transparent 2px,
+                    rgba(0, 255, 65, 0.03) 3px
+                );
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 2;
+        }
+
+        h1 {
+            font-family: 'Orbitron', monospace;
+            font-weight: 900;
+            font-size: 3em;
+            color: #00ff41;
+            text-align: center;
+            text-transform: uppercase;
+            letter-spacing: 8px;
+            margin: 30px 0;
+            text-shadow: 
+                0 0 10px #00ff41,
+                0 0 20px #00ff41,
+                0 0 30px #00ff41,
+                0 0 40px #00aa2b;
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+
+        @keyframes glow {
+            from { text-shadow: 0 0 10px #00ff41, 0 0 20px #00ff41, 0 0 30px #00ff41; }
+            to { text-shadow: 0 0 20px #00ff41, 0 0 30px #00ff41, 0 0 40px #00ff41, 0 0 50px #00aa2b; }
+        }
+
+        h2 {
+            font-family: 'Orbitron', monospace;
+            font-weight: 700;
+            font-size: 1.8em;
+            color: #00d9ff;
+            margin: 40px 0 20px 0;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            border-left: 5px solid #00ff41;
+            padding-left: 15px;
+            text-shadow: 0 0 10px #00d9ff;
+        }
+
+        h3 {
+            font-family: 'Orbitron', monospace;
+            color: #ff0055;
+            font-size: 1.3em;
+            text-shadow: 0 0 5px #ff0055;
         }
 
         .summary-table {
             width: 100%;
-            margin-bottom: 20px;
+            margin-bottom: 30px;
             border-collapse: collapse;
+            background: rgba(10, 10, 10, 0.8);
+            border: 2px solid #00ff41;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.3);
         }
 
         .summary-table th, .summary-table td {
             text-align: left;
-            padding: 12px;
-            border-bottom: 1px solid #dee2e6;
-            background-color: #ffffff;
+            padding: 15px;
+            border-bottom: 1px solid rgba(0, 255, 65, 0.2);
+            color: #00ff41;
         }
 
-        .summary-table tr:nth-child(even) {
-            background-color: #f8f9fa;
+        .summary-table tr:hover {
+            background-color: rgba(0, 255, 65, 0.1);
         }
 
         .summary-table th {
-            background-color: #343a40;
-            color: #ffffff;
+            background: linear-gradient(135deg, #001a0f 0%, #003d29 100%);
+            color: #00ff41;
+            font-family: 'Orbitron', monospace;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
         }
 
         .collapsible {
-            background-color: #007bff;
-            color: white;
+            background: linear-gradient(135deg, #003d29 0%, #00523d 100%);
+            color: #00ff41;
             cursor: pointer;
-            padding: 10px;
+            padding: 15px;
             width: 100%;
-            border: none;
+            border: 1px solid #00ff41;
             text-align: left;
             outline: none;
             font-size: 16px;
+            font-family: 'Orbitron', monospace;
+            font-weight: 700;
             margin-top: 10px;
-            border-radius: 5px;
+            border-radius: 3px;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 10px rgba(0, 255, 65, 0.2);
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
 
         .active, .collapsible:hover {
-            background-color: #0056b3;
+            background: linear-gradient(135deg, #00523d 0%, #007055 100%);
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.5);
+            transform: translateX(5px);
         }
 
         .content {
             padding: 0 18px;
             display: none;
             overflow: hidden;
-            background-color: #f1f1f1;
-            border: 1px solid #ddd;
-            border-radius: 5px;
+            background: rgba(0, 20, 10, 0.9);
+            border: 1px solid rgba(0, 255, 65, 0.3);
+            border-top: none;
+            border-radius: 0 0 3px 3px;
         }
 
         .content table {
             width: 100%;
             border-collapse: collapse;
+            margin: 15px 0;
         }
 
         .content th, .content td {
-            padding: 10px;
+            padding: 12px;
             text-align: left;
-            border-bottom: 1px solid #ddd;
-            background-color: #ffffff;
+            border-bottom: 1px solid rgba(0, 255, 65, 0.2);
+            color: #00ff41;
         }
 
-        .content tr:nth-child(even) {
-            background-color: #f8f9fa;
+        .content th {
+            background: rgba(0, 61, 41, 0.5);
+            font-family: 'Orbitron', monospace;
+            color: #00d9ff;
+            text-transform: uppercase;
+            font-size: 0.9em;
+        }
+
+        .content tr:hover {
+            background-color: rgba(0, 255, 65, 0.1);
+        }
+
+        .content a {
+            color: #00d9ff;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+
+        .content a:hover {
+            color: #00ff41;
+            text-shadow: 0 0 5px #00ff41;
         }
 
         .table-wrapper {
@@ -88,8 +199,9 @@
         }
 
         iframe {
-            border: none;
+            border: 2px solid #00ff41;
             border-radius: 5px;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.3);
         }
 
         .header-img {
@@ -98,14 +210,99 @@
             height: auto;
             border-radius: 10px;
             display: block;
+            margin: 20px auto;
+            border: 2px solid #00ff41;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.5);
+            background-color: #ffffff;
+            padding: 10px;
+        }
+        
+        .badge-link {
+            display: block;
+            width: fit-content;
+            margin: 20px auto;
+            background-color: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            padding: 15px;
+            border: 2px solid #00ff41;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.3);
+        }
+
+        .alert-box {
+            padding: 20px;
+            border-radius: 5px;
             margin: 20px 0;
+            border: 2px solid;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.8; }
+        }
+
+        .danger {
+            background: rgba(255, 0, 85, 0.1);
+            border-color: #ff0055;
+            color: #ff0055;
+        }
+
+        .warning {
+            background: rgba(255, 170, 0, 0.1);
+            border-color: #ffaa00;
+            color: #ffaa00;
+        }
+
+        .success {
+            background: rgba(0, 255, 65, 0.1);
+            border-color: #00ff41;
+            color: #00ff41;
+        }
+
+        .info {
+            background: rgba(0, 217, 255, 0.1);
+            border-color: #00d9ff;
+            color: #00d9ff;
+        }
+
+        /* Critical/High severity styling */
+        .collapsible.critical {
+            background: linear-gradient(135deg, #3d0000 0%, #520000 100%);
+            border-color: #ff0055;
+            color: #ff0055;
+        }
+
+        .collapsible.warning-level {
+            background: linear-gradient(135deg, #3d2a00 0%, #524000 100%);
+            border-color: #ffaa00;
+            color: #ffaa00;
+        }
+
+        /* Scanline effect */
+        @keyframes scanline {
+            0% { top: 0%; }
+            100% { top: 100%; }
+        }
+
+        .scanline {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(transparent, rgba(0, 255, 65, 0.8));
+            animation: scanline 4s linear infinite;
+            pointer-events: none;
+            z-index: 999;
         }
     </style>
 </head>
 
 <body>
-    <h1>Hacking Attempts</h1>
-    <a href="https://www.abuseipdb.com/user/51468"
+    <div class="scanline"></div>
+    <div class="container">
+    <h1>⚡ Hacking Attempts ⚡</h1>
+    <a href="https://www.abuseipdb.com/user/51468" class="badge-link"
         title="AbuseIPDB is an IP address blacklist for webmasters and sysadmins to report IP addresses engaging in abusive behavior on their networks"
         alt="AbuseIPDB Contributor Badge">
         <img src="https://www.abuseipdb.com/contributor/51468.svg" height="80" class="header-img">
@@ -128,17 +325,21 @@
             <td>Total Failed Attempts:</td>
             <td>{{ TOTAL_ATTEMPTS }}</td>
         </tr>
-        <tr style="background-color: #ffcccc;">
-            <td><strong>🚨 Successful Logins:</strong></td>
-            <td><strong>{{ TOTAL_SUCCESS }}</strong></td>
+        <tr style="background-color: rgba(0, 217, 255, 0.15);">
+            <td style="color: #00d9ff;"><strong>🛡️ Blocked by UFW Firewall:</strong></td>
+            <td style="color: #00d9ff;"><strong>{{ TOTAL_UFW_BLOCKS }}</strong></td>
         </tr>
-        <tr style="background-color: #ffe6e6;">
-            <td>Critical Events:</td>
-            <td>{{ severity_critical|length }}</td>
+        <tr style="background-color: rgba(255, 0, 85, 0.15);">
+            <td style="color: #ff0055;"><strong>🚨 Successful Logins:</strong></td>
+            <td style="color: #ff0055;"><strong>{{ TOTAL_SUCCESS }}</strong></td>
         </tr>
-        <tr style="background-color: #fff3cd;">
-            <td>High Severity Events:</td>
-            <td>{{ severity_high|length }}</td>
+        <tr style="background-color: rgba(255, 0, 85, 0.1);">
+            <td style="color: #ff0055;">Critical Events:</td>
+            <td style="color: #ff0055;">{{ severity_critical|length }}</td>
+        </tr>
+        <tr style="background-color: rgba(255, 170, 0, 0.1);">
+            <td style="color: #ffaa00;">High Severity Events:</td>
+            <td style="color: #ffaa00;">{{ severity_high|length }}</td>
         </tr>
         <tr>
             <td>By IP Address:</td>
@@ -156,17 +357,21 @@
             <td>By User:</td>
             <td>{{ user_count }}</td>
         </tr>
+        <tr style="background-color: rgba(0, 217, 255, 0.1);">
+            <td style="color: #00d9ff;">Unique IPs Blocked by UFW:</td>
+            <td style="color: #00d9ff;">{{ ufw_blocks_count }}</td>
+        </tr>
         <tr>
             <td>Hostname:</td>
             <td id="hostname">Loading...</td>
         </tr>
     </table>
 
-    <h2 style="color: #dc3545;">🚨 Successful Logins</h2>
+    <h2>🚨 Successful Logins</h2>
     {% if TOTAL_SUCCESS > 0 %}
-    <div style="background-color: #ffcccc; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+    <div class="alert-box danger">
         <h3>⚠️ WARNING: {{ TOTAL_SUCCESS }} Successful Login(s) Detected!</h3>
-        <button class="collapsible" style="background-color: #dc3545;">View Successful Login Details</button>
+        <button class="collapsible critical">View Successful Login Details</button>
         <div class="content">
             <table>
                 <tr>
@@ -189,7 +394,7 @@
         </div>
     </div>
     {% else %}
-    <div style="background-color: #d4edda; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+    <div class="alert-box success">
         <h3>✅ No Successful Logins Detected</h3>
     </div>
     {% endif %}
@@ -252,10 +457,106 @@
         </table>
     </div>
 
+    <h2>🛡️ UFW Firewall Blocks</h2>
+    {% if TOTAL_UFW_BLOCKS > 0 %}
+    <div class="alert-box info">
+        <p><strong>{{ TOTAL_UFW_BLOCKS }}</strong> connection attempts were blocked at the firewall level before reaching services.</p>
+        <p>These attacks never reached SSH or other services - they were stopped by UFW.</p>
+    </div>
+
+    <button class="collapsible">Blocks by Country</button>
+    <div class="content">
+        {% if ufw_country_attempts %}
+            <table>
+                <tr>
+                    <th>Country</th>
+                    <th>Total Blocks</th>
+                </tr>
+                {% for country, count in ufw_country_attempts %}
+                <tr>
+                    <td>{{ country }}</td>
+                    <td>{{ count }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <p>No UFW block data by country available.</p>
+        {% endif %}
+    </div>
+
+    <button class="collapsible">Blocks by Port</button>
+    <div class="content">
+        {% if ufw_port_summary %}
+            <table>
+                <tr>
+                    <th>Port</th>
+                    <th>Service</th>
+                    <th>Total Blocks</th>
+                </tr>
+                {% for port, count in ufw_port_summary %}
+                <tr>
+                    <td>{{ port }}</td>
+                    <td>
+                        {% if port == '22' %}SSH
+                        {% elif port == '80' %}HTTP
+                        {% elif port == '443' %}HTTPS
+                        {% elif port == '3389' %}RDP
+                        {% elif port == '3306' %}MySQL
+                        {% elif port == '5432' %}PostgreSQL
+                        {% elif port == '21' %}FTP
+                        {% elif port == '25' %}SMTP
+                        {% else %}Unknown
+                        {% endif %}
+                    </td>
+                    <td>{{ count }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <p>No UFW block data by port available.</p>
+        {% endif %}
+    </div>
+
+    <button class="collapsible">Detailed UFW Blocks by IP Address</button>
+    <div class="content">
+        {% if ufw_details %}
+            <table>
+                <tr>
+                    <th>IP Address</th>
+                    <th>Country</th>
+                    <th>City</th>
+                    <th>Ports Targeted</th>
+                    <th>Total Blocks</th>
+                </tr>
+                {% for ip_address, details in ufw_details.items() %}
+                <tr>
+                    <td><a href="https://www.abuseipdb.com/whois/{{ ip_address }}" target="_blank">{{ ip_address }}</a></td>
+                    <td>{{ details.country }}</td>
+                    <td>{{ details.city }}</td>
+                    <td>
+                        {% for port, count in details.ports.items() %}
+                            {{ port }}({{ count }}){% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    </td>
+                    <td>{{ details.total }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <p>No detailed UFW block data available.</p>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="alert-box success">
+        <h3>✅ No UFW Blocks Detected</h3>
+        <p>Either UFW is not active, or no attacks were blocked during this period.</p>
+    </div>
+    {% endif %}
+
     <h2>📊 Security Events by Severity</h2>
     
     {% if severity_critical|length > 0 %}
-    <button class="collapsible" style="background-color: #dc3545;">🚨 Critical Events ({{ severity_critical|length }})</button>
+    <button class="collapsible critical">🚨 Critical Events ({{ severity_critical|length }})</button>
     <div class="content">
         <table>
             <tr>
@@ -277,7 +578,7 @@
     {% endif %}
     
     {% if severity_high|length > 0 %}
-    <button class="collapsible" style="background-color: #ffc107;">⚠️ High Severity Events ({{ severity_high|length }})</button>
+    <button class="collapsible warning-level">⚠️ High Severity Events ({{ severity_high|length }})</button>
     <div class="content">
         <table>
             <tr>
@@ -325,6 +626,7 @@
             });
         };
     </script>
+    </div>
 </body>
 
 </html>
