@@ -1,206 +1,246 @@
 #!/bin/bash
-# Security Tools Installation Script for Thor
-# This script installs and configures essential security tools
-# Usage: sudo bash install_security_tools.sh
+#
+# HackedSSH Security Tools Installation Script
+# Installs and configures all security monitoring tools for comprehensive system protection
+#
+# Tools installed:
+# - auditd: Linux auditing system
+# - AIDE: Advanced Intrusion Detection Environment
+# - rkhunter: Rootkit Hunter
+# - chkrootkit: Check for rootkits
+# - ClamAV: Antivirus scanner
+# - Lynis: Security auditing tool
+# - Tiger: Security audit and intrusion detection tool
+# - psad: Port Scan Attack Detector
+# - logwatch: Log analysis and reporting
+#
 
-set -e
+set -e  # Exit on error
 
-echo "=========================================="
-echo "  Security Tools Installation for Thor"
-echo "=========================================="
-echo ""
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
 
 # Check if running as root
-if [ "$EUID" -ne 0 ]; then 
-    echo "ERROR: This script must be run as root (use sudo)"
-    exit 1
+if [[ $EUID -ne 0 ]]; then
+   echo -e "${RED}This script must be run as root (use sudo)${NC}" 
+   exit 1
 fi
 
-# Update package lists
-echo "Step 1: Updating package lists..."
-apt-get update
-
-# ===== FAIL2BAN =====
-echo ""
-echo "Step 2: Installing Fail2Ban..."
-if command -v fail2ban-client &> /dev/null; then
-    echo "  Fail2Ban already installed, skipping..."
-else
-    apt-get install -y fail2ban
-    echo "  ✓ Fail2Ban installed"
-fi
-
-# ===== UFW FIREWALL =====
-echo ""
-echo "Step 3: Installing UFW Firewall..."
-if command -v ufw &> /dev/null; then
-    echo "  UFW already installed, skipping..."
-else
-    apt-get install -y ufw
-    echo "  ✓ UFW installed"
-fi
-
-# ===== AUDITD =====
-echo ""
-echo "Step 4: Installing Auditd (system auditing)..."
-if command -v auditctl &> /dev/null; then
-    echo "  Auditd already installed, skipping..."
-else
-    apt-get install -y auditd audispd-plugins
-    systemctl enable auditd
-    systemctl start auditd
-    echo "  ✓ Auditd installed and enabled"
-fi
-
-# ===== AIDE (File Integrity Monitoring) =====
-echo ""
-echo "Step 5: Installing AIDE (Advanced Intrusion Detection Environment)..."
-if command -v aide &> /dev/null; then
-    echo "  AIDE already installed, skipping..."
-else
-    apt-get install -y aide aide-common
-    echo "  Initializing AIDE database (this may take several minutes)..."
-    aideinit
-    if [ -f /var/lib/aide/aide.db.new ]; then
-        mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-    fi
-    echo "  ✓ AIDE installed and database initialized"
-fi
-
-# ===== RKHUNTER (Rootkit Detection) =====
-echo ""
-echo "Step 6: Installing RKHunter (Rootkit Hunter)..."
-if command -v rkhunter &> /dev/null; then
-    echo "  RKHunter already installed, skipping..."
-else
-    apt-get install -y rkhunter
-    echo "  Updating RKHunter database..."
-    rkhunter --update
-    rkhunter --propupd
-    echo "  ✓ RKHunter installed and updated"
-fi
-
-# ===== CLAMAV (Antivirus) =====
-echo ""
-echo "Step 7: Installing ClamAV (Antivirus)..."
-if command -v clamscan &> /dev/null; then
-    echo "  ClamAV already installed, skipping..."
-else
-    apt-get install -y clamav clamav-daemon
-    echo "  Updating ClamAV virus definitions (this may take a while)..."
-    systemctl stop clamav-freshclam 2>/dev/null || true
-    freshclam
-    systemctl start clamav-freshclam
-    systemctl enable clamav-daemon
-    systemctl start clamav-daemon
-    echo "  ✓ ClamAV installed and updated"
-fi
-
-# ===== LOGWATCH =====
-echo ""
-echo "Step 8: Installing Logwatch (Log Analysis)..."
-if command -v logwatch &> /dev/null; then
-    echo "  Logwatch already installed, skipping..."
-else
-    apt-get install -y logwatch
-    echo "  ✓ Logwatch installed"
-fi
-
-# ===== CHKROOTKIT =====
-echo ""
-echo "Step 9: Installing Chkrootkit (Rootkit Detection)..."
-if command -v chkrootkit &> /dev/null; then
-    echo "  Chkrootkit already installed, skipping..."
-else
-    apt-get install -y chkrootkit
-    echo "  ✓ Chkrootkit installed"
-fi
-
-# ===== TIGER (Security Audit Tool) =====
-echo ""
-echo "Step 10: Installing Tiger (Security Audit)..."
-if command -v tiger &> /dev/null; then
-    echo "  Tiger already installed, skipping..."
-else
-    apt-get install -y tiger
-    echo "  ✓ Tiger installed"
-fi
-
-# ===== LYNIS (Security Auditing) =====
-echo ""
-echo "Step 11: Installing Lynis (Security Auditing)..."
-if command -v lynis &> /dev/null; then
-    echo "  Lynis already installed, skipping..."
-else
-    apt-get install -y lynis
-    echo "  ✓ Lynis installed"
-fi
-
-# ===== PSAD (Port Scan Attack Detector) =====
-echo ""
-echo "Step 12: Installing PSAD (Port Scan Attack Detector)..."
-if command -v psad &> /dev/null; then
-    echo "  PSAD already installed, skipping..."
-else
-    apt-get install -y psad
-    echo "  ✓ PSAD installed"
-fi
-
-# ===== PYTHON DEPENDENCIES FOR HACKEDSSH =====
-echo ""
-echo "Step 13: Installing Python dependencies for HackedSSH..."
-pip3 install --upgrade folium geoip2 jinja2 systemd-python configparser 2>/dev/null || {
-    echo "  Warning: Some Python packages may have failed to install"
-    echo "  You may need to install them manually"
-}
-echo "  ✓ Python dependencies installed"
-
-# ===== GOOGLE AUTHENTICATOR (Optional 2FA) =====
-echo ""
-echo "Step 14: Installing Google Authenticator (2FA - Optional)..."
-read -p "Do you want to install Google Authenticator for 2FA? (y/n): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    apt-get install -y libpam-google-authenticator
-    echo "  ✓ Google Authenticator installed"
-    echo "  To configure for a user, run: google-authenticator"
-else
-    echo "  Skipped Google Authenticator installation"
-fi
-
-# ===== SUMMARY =====
-echo ""
-echo "=========================================="
-echo "  Installation Complete!"
-echo "=========================================="
-echo ""
-echo "Installed Security Tools:"
-echo "  ✓ Fail2Ban           - Intrusion prevention"
-echo "  ✓ UFW                - Firewall"
-echo "  ✓ Auditd             - System auditing"
-echo "  ✓ AIDE               - File integrity monitoring"
-echo "  ✓ RKHunter           - Rootkit detection"
-echo "  ✓ ClamAV             - Antivirus"
-echo "  ✓ Logwatch           - Log analysis"
-echo "  ✓ Chkrootkit         - Rootkit detection"
-echo "  ✓ Tiger              - Security audit"
-echo "  ✓ Lynis              - Security audit"
-echo "  ✓ PSAD               - Port scan detector"
-echo ""
-echo "Next Steps:"
-echo "  1. Configure Fail2Ban:  Copy config_examples/fail2ban_jail.local to /etc/fail2ban/jail.local"
-echo "  2. Configure UFW:       Run scripts/setup_ufw_firewall.sh"
-echo "  3. Configure SSH:       Review config_examples/sshd_config.hardened"
-echo "  4. Configure Auditd:    Copy config_examples/audit.rules to /etc/audit/rules.d/"
-echo "  5. Run security audit:  bash scripts/system_security_audit.sh"
-echo "  6. Install HackedSSH:   bash scripts/install_hackedssh_service.sh"
-echo ""
-echo "Useful Commands:"
-echo "  - Run Lynis audit:      sudo lynis audit system"
-echo "  - Run RKHunter scan:    sudo rkhunter --check"
-echo "  - Run AIDE check:       sudo aide --check"
-echo "  - Run ClamAV scan:      sudo clamscan -r /home"
-echo "  - Run Tiger audit:      sudo tiger"
-echo "  - View Logwatch report: sudo logwatch --detail high --range today"
+echo -e "${CYAN}╔═══════════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║  HackedSSH Security Tools Installation       ║${NC}"
+echo -e "${CYAN}║  Comprehensive System Protection Suite       ║${NC}"
+echo -e "${CYAN}╚═══════════════════════════════════════════════╝${NC}"
 echo ""
 
+# Update package list
+echo -e "${YELLOW}[1/10] Updating package list...${NC}"
+apt-get update -qq
+
+# 1. Install auditd (Linux Audit Framework)
+echo -e "${YELLOW}[2/10] Installing auditd (Linux Audit Framework)...${NC}"
+apt-get install -y auditd audispd-plugins
+systemctl enable auditd
+systemctl start auditd
+
+# Configure auditd for security monitoring
+echo -e "${GREEN}   Configuring auditd rules...${NC}"
+cat > /etc/audit/rules.d/security.rules <<'EOF'
+# Monitor authentication and authorization
+-w /etc/passwd -p wa -k passwd_changes
+-w /etc/shadow -p wa -k shadow_changes
+-w /etc/group -p wa -k group_changes
+-w /etc/sudoers -p wa -k sudoers_changes
+-w /var/log/auth.log -p wa -k auth_log_changes
+
+# Monitor system calls
+-a always,exit -F arch=b64 -S adjtimex -S settimeofday -k time_change
+-a always,exit -F arch=b32 -S adjtimex -S settimeofday -S stime -k time_change
+
+# Monitor network configuration
+-w /etc/hosts -p wa -k hosts_changes
+-w /etc/network/ -p wa -k network_changes
+
+# Monitor SSH
+-w /etc/ssh/sshd_config -p wa -k sshd_config_changes
+EOF
+
+augenrules --load
+echo -e "${GREEN}   ✓ auditd installed and configured${NC}"
+
+# 2. Install AIDE (Advanced Intrusion Detection Environment)
+echo -e "${YELLOW}[3/10] Installing AIDE (File Integrity Monitor)...${NC}"
+apt-get install -y aide aide-common
+
+# Initialize AIDE database
+echo -e "${GREEN}   Initializing AIDE database (this may take a while)...${NC}"
+aideinit
+mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+
+# Configure daily AIDE checks
+cat > /etc/cron.daily/aide <<'EOF'
+#!/bin/bash
+/usr/bin/aide --check | tee /var/log/aide/aide.log
+EOF
+chmod +x /etc/cron.daily/aide
+mkdir -p /var/log/aide
+
+echo -e "${GREEN}   ✓ AIDE installed and initialized${NC}"
+
+# 3. Install rkhunter (Rootkit Hunter)
+echo -e "${YELLOW}[4/10] Installing rkhunter (Rootkit Hunter)...${NC}"
+apt-get install -y rkhunter
+
+# Update rkhunter database
+rkhunter --update
+rkhunter --propupd
+
+# Configure rkhunter
+sed -i 's/^UPDATE_MIRRORS=.*/UPDATE_MIRRORS=1/' /etc/rkhunter.conf
+sed -i 's/^MIRRORS_MODE=.*/MIRRORS_MODE=0/' /etc/rkhunter.conf
+sed -i 's/^WEB_CMD=.*/WEB_CMD=""/' /etc/rkhunter.conf
+
+# Configure daily rkhunter check
+cat > /etc/cron.daily/rkhunter <<'EOF'
+#!/bin/bash
+/usr/bin/rkhunter --cronjob --update --report-warnings-only | tee -a /var/log/rkhunter.log
+EOF
+chmod +x /etc/cron.daily/rkhunter
+
+echo -e "${GREEN}   ✓ rkhunter installed and configured${NC}"
+
+# 4. Install chkrootkit
+echo -e "${YELLOW}[5/10] Installing chkrootkit...${NC}"
+apt-get install -y chkrootkit
+
+# Configure daily chkrootkit check
+cat > /etc/cron.daily/chkrootkit <<'EOF'
+#!/bin/bash
+/usr/sbin/chkrootkit | tee /var/log/chkrootkit.log
+EOF
+chmod +x /etc/cron.daily/chkrootkit
+
+echo -e "${GREEN}   ✓ chkrootkit installed${NC}"
+
+# 5. Install ClamAV (Antivirus)
+echo -e "${YELLOW}[6/10] Installing ClamAV (Antivirus)...${NC}"
+apt-get install -y clamav clamav-daemon clamav-freshclam
+
+# Stop freshclam to update virus database
+systemctl stop clamav-freshclam
+freshclam
+systemctl start clamav-freshclam
+systemctl enable clamav-freshclam
+
+# Start ClamAV daemon
+systemctl enable clamav-daemon
+systemctl start clamav-daemon
+
+# Configure weekly scan
+cat > /etc/cron.weekly/clamav-scan <<'EOF'
+#!/bin/bash
+/usr/bin/clamscan -r /home /root --log=/var/log/clamav/clamav-scan.log
+EOF
+chmod +x /etc/cron.weekly/clamav-scan
+mkdir -p /var/log/clamav
+
+echo -e "${GREEN}   ✓ ClamAV installed and configured${NC}"
+
+# 6. Install Lynis (Security Auditing Tool)
+echo -e "${YELLOW}[7/10] Installing Lynis (Security Auditing)...${NC}"
+apt-get install -y lynis
+
+# Configure weekly Lynis audit
+cat > /etc/cron.weekly/lynis <<'EOF'
+#!/bin/bash
+/usr/sbin/lynis audit system --quick --quiet | tee /var/log/lynis.log
+EOF
+chmod +x /etc/cron.weekly/lynis
+
+echo -e "${GREEN}   ✓ Lynis installed${NC}"
+
+# 7. Install Tiger (Security Audit Tool)
+echo -e "${YELLOW}[8/10] Installing Tiger (Security Audit)...${NC}"
+apt-get install -y tiger
+
+# Configure Tiger
+mkdir -p /var/log/tiger
+cat > /etc/tiger/cronrc <<'EOF'
+Tiger_Check_PASSWD=Y
+Tiger_Check_GROUP=Y
+Tiger_Check_ACCOUNTS=Y
+Tiger_Check_RHOSTS=Y
+Tiger_Check_NETRC=Y
+Tiger_Check_ALIASES=Y
+Tiger_Check_CRON=Y
+Tiger_Check_ANONFTP=Y
+Tiger_Check_EXPORTS=Y
+Tiger_Check_INETD=Y
+Tiger_Check_SERVICES=Y
+Tiger_Check_FILESYS=Y
+Tiger_Check_PERMS=Y
+Tiger_Check_SUID=Y
+Tiger_Check_SIGNATURES=Y
+EOF
+
+echo -e "${GREEN}   ✓ Tiger installed and configured${NC}"
+
+# 8. Install psad (Port Scan Attack Detector)
+echo -e "${YELLOW}[9/10] Installing psad (Port Scan Detector)...${NC}"
+apt-get install -y psad
+
+# Configure psad
+sed -i 's/^EMAIL_ADDRESSES.*;/EMAIL_ADDRESSES root@localhost;/' /etc/psad/psad.conf
+sed -i 's/^HOSTNAME.*;/HOSTNAME '$(hostname)';/' /etc/psad/psad.conf
+sed -i 's/^ENABLE_AUTO_IDS.*;/ENABLE_AUTO_IDS Y;/' /etc/psad/psad.conf
+sed -i 's/^ENABLE_AUTO_IDS_EMAILS.*;/ENABLE_AUTO_IDS_EMAILS Y;/' /etc/psad/psad.conf
+
+# Update psad signatures
+psad --sig-update
+psad -H
+
+# Restart psad
+systemctl enable psad
+systemctl restart psad
+
+echo -e "${GREEN}   ✓ psad installed and configured${NC}"
+
+# 9. Install logwatch (Log Analysis)
+echo -e "${YELLOW}[10/10] Installing logwatch (Log Analysis)...${NC}"
+apt-get install -y logwatch
+
+# Configure logwatch for daily summaries
+cat > /etc/cron.daily/00logwatch <<'EOF'
+#!/bin/bash
+/usr/sbin/logwatch --output mail --mailto root --detail high
+EOF
+chmod +x /etc/cron.daily/00logwatch
+
+echo -e "${GREEN}   ✓ logwatch installed${NC}"
+
+# Summary
+echo ""
+echo -e "${GREEN}╔═══════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║  Installation Complete!                       ║${NC}"
+echo -e "${GREEN}╚═══════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "${CYAN}Installed Security Tools:${NC}"
+echo -e "  ✓ auditd       - System call auditing"
+echo -e "  ✓ AIDE         - File integrity monitoring"
+echo -e "  ✓ rkhunter     - Rootkit detection"
+echo -e "  ✓ chkrootkit   - Rootkit scanning"
+echo -e "  ✓ ClamAV       - Antivirus scanning"
+echo -e "  ✓ Lynis        - Security auditing"
+echo -e "  ✓ Tiger        - Security audit scripts"
+echo -e "  ✓ psad         - Port scan detection"
+echo -e "  ✓ logwatch     - Log analysis and reporting"
+echo ""
+echo -e "${YELLOW}Next Steps:${NC}"
+echo -e "  1. Run initial scans: ${CYAN}sudo rkhunter --check${NC}"
+echo -e "  2. Check logs in: ${CYAN}/var/log/${NC}"
+echo -e "  3. Generate HackedSSH report to see security events"
+echo ""
+echo -e "${GREEN}All tools are now monitoring your system!${NC}"

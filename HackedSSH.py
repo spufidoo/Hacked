@@ -6,6 +6,7 @@ import argparse
 import subprocess
 import configparser
 import getpass
+import random
 from jinja2 import Environment, FileSystemLoader
 from systemd import journal
 from datetime import datetime, timedelta
@@ -139,6 +140,371 @@ def extract_ufw_blocks(from_date, to_date, debug=False):
     
     return ufw_blocks, TOTAL_UFW_BLOCKS
 
+# Function to extract nginx access logs
+def extract_nginx_logs(from_date, to_date, debug=False):
+    nginx_access = defaultdict(lambda: defaultdict(int))  # {ip: {status: count}}
+    nginx_errors = []
+    TOTAL_NGINX_REQUESTS = 0
+    
+    try:
+        # Parse nginx access log using sudo cat for permissions
+        # Format: IP - - [date] "REQUEST" status bytes "referrer" "user-agent"
+        access_log = subprocess.check_output(
+            ["cat", "/var/log/nginx/access.log"]
+        ).decode("utf-8")
+        
+        for line in access_log.splitlines():
+            try:
+                # Extract IP, date, status code
+                match = re.match(r'^(\S+) - - \[([^\]]+)\] "([^"]*)" (\d+)', line)
+                if match:
+                    ip_address = match.group(1)
+                    log_date_str = match.group(2)
+                    request = match.group(3)
+                    status = match.group(4)
+                    
+                    # Parse date: 23/Oct/2025:14:42:31 +0100
+                    log_date = datetime.strptime(log_date_str.split()[0], '%d/%b/%Y:%H:%M:%S')
+                    
+                    # Filter by date range - handle both date objects and strings
+                    if isinstance(from_date, str):
+                        from_dt = datetime.strptime(from_date, '%Y-%m-%d %H:%M:%S')
+                    else:
+                        from_dt = datetime.combine(from_date, datetime.min.time())
+                    
+                    if isinstance(to_date, str):
+                        to_dt = datetime.strptime(to_date, '%Y-%m-%d %H:%M:%S')
+                    else:
+                        to_dt = datetime.combine(to_date, datetime.max.time())
+                    
+                    if from_dt <= log_date <= to_dt:
+                        # Skip local IPs
+                        if not ip_address.startswith(('127.', '192.168.', '10.', '172.')):
+                            nginx_access[ip_address][status] += 1
+                            TOTAL_NGINX_REQUESTS += 1
+                            if debug:
+                                print(f"NGINX: {ip_address} - {status} - {request[:50]}")
+            except Exception as e:
+                continue  # Skip malformed lines
+                    
+        # Parse nginx error log
+        try:
+            error_log = subprocess.check_output(
+                ["cat", "/var/log/nginx/error.log"]
+            ).decode("utf-8")
+            
+            for line in error_log.splitlines():
+                try:
+                    # Extract date from error log
+                    date_match = re.search(r'(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})', line)
+                    if date_match:
+                        log_date = datetime.strptime(date_match.group(1), '%Y/%m/%d %H:%M:%S')
+                        
+                        # Handle both date objects and strings
+                        if isinstance(from_date, str):
+                            from_dt = datetime.strptime(from_date, '%Y-%m-%d %H:%M:%S')
+                        else:
+                            from_dt = datetime.combine(from_date, datetime.min.time())
+                        
+                        if isinstance(to_date, str):
+                            to_dt = datetime.strptime(to_date, '%Y-%m-%d %H:%M:%S')
+                        else:
+                            to_dt = datetime.combine(to_date, datetime.max.time())
+                        
+                        if from_dt <= log_date <= to_dt:
+                            # Extract error level and message
+                            error_match = re.search(r'\[(\w+)\] \d+#\d+: (.+)', line)
+                            if error_match:
+                                level = error_match.group(1)
+                                message = error_match.group(2).strip()
+                                nginx_errors.append({'level': level, 'message': message, 'time': log_date})
+                except Exception as e:
+                    continue
+        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            if debug:
+                print(f"nginx error.log not accessible: {e}")
+                
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        journal.send(MESSAGE=f"nginx access.log not accessible: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+    except Exception as e:
+        journal.send(MESSAGE=f"Error reading nginx logs: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+    
+    return nginx_access, nginx_errors, TOTAL_NGINX_REQUESTS
+
+# Function to extract security events and categorize by severity
+def extract_security_events(ssh_attempts, nginx_access, nginx_errors, from_date, to_date, debug=False):
+    critical_events = []
+    high_events = []
+    medium_events = []
+    low_events = []
+    successful_logins = defaultdict(lambda: {'user': '', 'count': 0, 'timestamps': [], 'method': ''})
+    
+    # 1. Check for successful SSH logins (CRITICAL)
+    try:
+        auth_logs = subprocess.check_output([
+            "journalctl", "_SYSTEMD_UNIT=ssh.service",
+            f"--since={from_date}", f"--until={to_date}",
+            "--no-pager"
+        ]).decode("utf-8")
+        
+        for line in auth_logs.splitlines():
+            if "Accepted password" in line or "Accepted publickey" in line:
+                method = "password" if "Accepted password" in line else "publickey"
+                match = re.search(r'(\w+\s+\d+\s+\d+:\d+:\d+).*Accepted.*for (\S+) from (\S+)', line)
+                if match:
+                    timestamp = match.group(1)
+                    user = match.group(2)
+                    ip = match.group(3)
+                    
+                    # Add to successful logins tracking
+                    successful_logins[ip]['user'] = user
+                    successful_logins[ip]['count'] += 1
+                    successful_logins[ip]['method'] = method
+                    successful_logins[ip]['timestamps'].append(timestamp)
+                    
+                    # Also add to critical events
+                    critical_events.append({
+                        'service': 'SSH',
+                        'event': f'Successful Login ({method})',
+                        'user': user,
+                        'ip': ip,
+                        'timestamp': timestamp,
+                        'message': line.strip()
+                    })
+    except Exception as e:
+        if debug:
+            print(f"Error checking SSH successful logins: {e}")
+    
+    # 2. Check for root login attempts (CRITICAL if successful, HIGH if failed)
+    for ip, users in ssh_attempts.items():
+        if 'root' in users:
+            high_events.append({
+                'service': 'SSH',
+                'event': 'Root Login Attempts',
+                'user': 'root',
+                'ip': ip,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'message': f"{users['root']} failed root login attempts from {ip}"
+            })
+    
+    # 3. Check for rapid failed attempts from same IP (HIGH)
+    for ip, users in ssh_attempts.items():
+        total_attempts = sum(users.values())
+        if total_attempts >= 50:
+            high_events.append({
+                'service': 'SSH',
+                'event': 'Brute Force Attack',
+                'user': ', '.join(list(users.keys())[:3]),
+                'ip': ip,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'message': f"Intense brute force: {total_attempts} attempts from {ip}"
+            })
+    
+    # 4. Analyze nginx logs for attack patterns
+    for ip, statuses in nginx_access.items():
+        # Check for scanning activity (many 404s)
+        if '404' in statuses and statuses['404'] >= 10:
+            medium_events.append({
+                'service': 'nginx',
+                'event': 'Web Scanning',
+                'user': 'N/A',
+                'ip': ip,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'message': f"Possible directory scanning: {statuses['404']} 404 errors from {ip}"
+            })
+        
+        # Check for 403 Forbidden (attempting restricted access)
+        if '403' in statuses and statuses['403'] >= 5:
+            high_events.append({
+                'service': 'nginx',
+                'event': 'Unauthorized Access Attempts',
+                'user': 'N/A',
+                'ip': ip,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'message': f"Repeated forbidden access attempts: {statuses['403']} from {ip}"
+            })
+        
+        # Check for 500 errors (possible exploitation attempts)
+        if '500' in statuses or '502' in statuses:
+            high_events.append({
+                'service': 'nginx',
+                'event': 'Server Errors',
+                'user': 'N/A',
+                'ip': ip,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'message': f"Server errors triggered by {ip} - possible exploitation"
+            })
+    
+    # 5. Check rkhunter logs (CRITICAL if warnings found)
+    try:
+        rkhunter_log = subprocess.check_output(["cat", "/var/log/rkhunter.log"], stderr=subprocess.DEVNULL).decode("utf-8")
+        for line in rkhunter_log.splitlines():
+            if "Warning:" in line:
+                critical_events.append({
+                    'service': 'rkhunter',
+                    'event': 'Rootkit Warning',
+                    'user': 'system',
+                    'ip': 'localhost',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': line.strip()
+                })
+    except:
+        pass
+    
+    # 6. Check AIDE (Advanced Intrusion Detection) logs
+    try:
+        aide_log = subprocess.check_output(["cat", "/var/log/aide/aide.log"], stderr=subprocess.DEVNULL).decode("utf-8")
+        for line in aide_log.splitlines():
+            if "changed:" in line.lower() or "added:" in line.lower() or "removed:" in line.lower():
+                critical_events.append({
+                    'service': 'AIDE',
+                    'event': 'File System Change',
+                    'user': 'system',
+                    'ip': 'localhost',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': line.strip()
+                })
+    except:
+        pass
+    
+    # 7. Check ClamAV for virus detections
+    try:
+        clam_log = subprocess.check_output(["cat", "/var/log/clamav/clamav.log"], stderr=subprocess.DEVNULL).decode("utf-8")
+        for line in clam_log.splitlines():
+            if "FOUND" in line:
+                critical_events.append({
+                    'service': 'ClamAV',
+                    'event': 'Malware Detected',
+                    'user': 'system',
+                    'ip': 'localhost',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': line.strip()
+                })
+    except:
+        pass
+    
+    # 8. Check chkrootkit logs
+    try:
+        chkrootkit_log = subprocess.check_output(["cat", "/var/log/chkrootkit.log"], stderr=subprocess.DEVNULL).decode("utf-8")
+        for line in chkrootkit_log.splitlines():
+            if "INFECTED" in line or "Vulnerable" in line:
+                critical_events.append({
+                    'service': 'chkrootkit',
+                    'event': 'Rootkit Detected',
+                    'user': 'system',
+                    'ip': 'localhost',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': line.strip()
+                })
+    except:
+        pass
+    
+    # 9. Check auditd logs for suspicious activity
+    try:
+        audit_logs = subprocess.check_output([
+            "ausearch", "-ts", "yesterday", "-m", "USER_AUTH,USER_LOGIN,EXECVE",
+            "-i"
+        ], stderr=subprocess.DEVNULL).decode("utf-8")
+        
+        for line in audit_logs.splitlines():
+            if "failed" in line.lower():
+                high_events.append({
+                    'service': 'auditd',
+                    'event': 'Authentication Failure',
+                    'user': 'various',
+                    'ip': 'localhost',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': line.strip()[:200]
+                })
+    except:
+        pass
+    
+    # 10. Check psad (Port Scan Attack Detector) logs
+    try:
+        psad_log = subprocess.check_output(["cat", "/var/log/psad/psad.log"], stderr=subprocess.DEVNULL).decode("utf-8")
+        for line in psad_log.splitlines():
+            if "scan detected" in line.lower() or "danger level" in line.lower():
+                match = re.search(r'from:\s*(\S+)', line)
+                ip = match.group(1) if match else 'unknown'
+                high_events.append({
+                    'service': 'psad',
+                    'event': 'Port Scan Detected',
+                    'user': 'N/A',
+                    'ip': ip,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': line.strip()
+                })
+    except:
+        pass
+    
+    # 11. Check Lynis audit recommendations
+    try:
+        lynis_log = subprocess.check_output(["cat", "/var/log/lynis.log"], stderr=subprocess.DEVNULL).decode("utf-8")
+        for line in lynis_log.splitlines():
+            if "Warning" in line:
+                medium_events.append({
+                    'service': 'Lynis',
+                    'event': 'Security Warning',
+                    'user': 'system',
+                    'ip': 'localhost',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': line.strip()[:200]
+                })
+    except:
+        pass
+    
+    # 12. Check Tiger audit logs
+    try:
+        tiger_log = subprocess.check_output(["cat", "/var/log/tiger/security.report.txt"], stderr=subprocess.DEVNULL).decode("utf-8")
+        for line in tiger_log.splitlines():
+            if "FAIL" in line or "ALERT" in line:
+                high_events.append({
+                    'service': 'Tiger',
+                    'event': 'Security Check Failed',
+                    'user': 'system',
+                    'ip': 'localhost',
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'message': line.strip()[:200]
+                })
+    except:
+        pass
+    
+    # 13. Check for sudo usage anomalies
+    try:
+        sudo_logs = subprocess.check_output([
+            "journalctl", "_COMM=sudo",
+            f"--since={from_date}", f"--until={to_date}",
+            "--no-pager"
+        ]).decode("utf-8")
+        
+        sudo_failures = 0
+        for line in sudo_logs.splitlines():
+            if "authentication failure" in line.lower():
+                sudo_failures += 1
+        
+        if sudo_failures >= 5:
+            high_events.append({
+                'service': 'sudo',
+                'event': 'Multiple Sudo Failures',
+                'user': 'various',
+                'ip': 'localhost',
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'message': f"{sudo_failures} failed sudo attempts detected"
+            })
+    except:
+        pass
+    
+    # Sort events by timestamp (most recent first)
+    critical_events = sorted(critical_events, key=lambda x: x['timestamp'], reverse=True)
+    high_events = sorted(high_events, key=lambda x: x['timestamp'], reverse=True)
+    medium_events = sorted(medium_events, key=lambda x: x['timestamp'], reverse=True)
+    
+    if debug:
+        print(f"Security Events: Critical={len(critical_events)}, High={len(high_events)}, Medium={len(medium_events)}")
+        print(f"Successful Logins: {len(successful_logins)}")
+    
+    return critical_events, high_events, medium_events, successful_logins
+
 # Function to get country from IP address
 def get_country_from_ip(ip_address):
     try:
@@ -184,7 +550,7 @@ def get_city_from_ip(ip_address):
         return "Unknown"
 
 # Function to generate HTML report
-def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, from_date, to_date,debug=False):
+def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, nginx_access, TOTAL_NGINX_REQUESTS, nginx_errors, from_date, to_date,debug=False):
     env = Environment(loader=FileSystemLoader(ROOT))
     template = env.get_template(HACKER_TEMPLATE)
     m = folium.Map(location=[0, 0], zoom_start=2)  # Create a map object
@@ -193,12 +559,16 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
     city_attempts = defaultdict(int)
     country_details = defaultdict(lambda: defaultdict(lambda: {'city': '', 'users': defaultdict(int)}))
 
+    # Track locations to add slight jitter for overlapping markers
+    location_counts = defaultdict(int)
+    
     for ip_address, attempts in ssh_attempts.items():
         country = get_country_from_ip(ip_address)
         country_name = country_names.get(country, "Unknown")
-        country_attempts[country_name] += sum(attempts.values())
+        total_count = sum(attempts.values())
+        country_attempts[country_name] += total_count
         city, lat, lon = get_city_and_coords_from_ip(ip_address)
-        city_attempts[city] += sum(attempts.values())
+        city_attempts[city] += total_count
 
         for userid, count in attempts.items():
             user_attempts[userid] += count
@@ -207,7 +577,37 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
             country_details[country_name][ip_address]['users'][userid] += count
 
         if lat is not None and lon is not None:
-            folium.Marker([lat, lon], popup=f"City: {city}\nIP Address: {ip_address}").add_to(m)  # Add marker to the map
+            # Add slight jitter to avoid overlapping markers (0.1 degrees ~11km)
+            location_key = f"{lat:.1f},{lon:.1f}"
+            jitter = location_counts[location_key] * 0.05
+            location_counts[location_key] += 1
+            
+            jittered_lat = lat + (random.random() - 0.5) * jitter
+            jittered_lon = lon + (random.random() - 0.5) * jitter
+            
+            # Color based on severity: red for high attempts, yellow for medium, green for low
+            if total_count > 100:
+                color = 'red'
+                radius = 10
+            elif total_count > 50:
+                color = 'orange'
+                radius = 8
+            elif total_count > 10:
+                color = 'yellow'
+                radius = 6
+            else:
+                color = 'green'
+                radius = 4
+            
+            folium.CircleMarker(
+                location=[jittered_lat, jittered_lon],
+                radius=radius,
+                popup=f"<b>{city}</b><br>IP: {ip_address}<br>Attempts: {total_count}<br>Users: {', '.join(list(attempts.keys())[:5])}",
+                color=color,
+                fill=True,
+                fillColor=color,
+                fillOpacity=0.7
+            ).add_to(m)
 
     m.save(HACKER_MAP)  # Save the map to an HTML file
     journal.send(MESSAGE=f"Map template {ROOT}/{HACKER_TEMPLATE} saved to {HACKER_MAP}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
@@ -215,6 +615,27 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
     country_attempts = sorted(country_attempts.items(), key=lambda x: x[1], reverse=True)
     user_attempts = sorted(user_attempts.items(), key=lambda x: x[0])
     report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Extract security events from all sources
+    critical_events, high_events, medium_events, successful_logins = extract_security_events(
+        ssh_attempts, nginx_access, nginx_errors, from_date, to_date, debug
+    )
+    
+    # Add country information to successful logins
+    successful_country_attempts = defaultdict(int)
+    for ip, login_data in successful_logins.items():
+        country = get_country_from_ip(ip)
+        country_name = country_names.get(country, "Unknown")
+        city = get_city_from_ip(ip)
+        
+        # Add geo data to login info
+        login_data['country'] = country_name
+        login_data['city'] = city
+        
+        successful_country_attempts[country_name] += login_data['count']
+    
+    successful_country_attempts = sorted(successful_country_attempts.items(), key=lambda x: x[1], reverse=True)
+    TOTAL_SUCCESS = sum(login['count'] for login in successful_logins.values())
     
     # Process UFW blocks by country and port
     ufw_country_attempts = defaultdict(int)
@@ -243,10 +664,38 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
     ufw_port_summary = sorted(ufw_port_summary.items(), key=lambda x: x[1], reverse=True)
     ufw_details = dict(sorted(ufw_details.items(), key=lambda x: x[1]['total'], reverse=True))
 
+    # Process nginx access logs by country and status
+    nginx_country_requests = defaultdict(int)
+    nginx_status_summary = defaultdict(int)
+    nginx_details = {}
+    
+    for ip_address, statuses in nginx_access.items():
+        country = get_country_from_ip(ip_address)
+        country_name = country_names.get(country, "Unknown")
+        city = get_city_from_ip(ip_address)
+        
+        total_requests = sum(statuses.values())
+        nginx_country_requests[country_name] += total_requests
+        
+        for status, count in statuses.items():
+            nginx_status_summary[status] += count
+        
+        nginx_details[ip_address] = {
+            'country': country_name,
+            'city': city,
+            'statuses': dict(statuses),
+            'total': total_requests
+        }
+    
+    nginx_country_requests = sorted(nginx_country_requests.items(), key=lambda x: x[1], reverse=True)
+    nginx_status_summary = sorted(nginx_status_summary.items(), key=lambda x: int(x[0]))
+    nginx_details = dict(sorted(nginx_details.items(), key=lambda x: x[1]['total'], reverse=True))
+
     html_content = template.render(
         TOTAL_ATTEMPTS=TOTAL_ATTEMPTS,
-        TOTAL_SUCCESS=0,  # Placeholder for future enhancement
+        TOTAL_SUCCESS=TOTAL_SUCCESS,
         TOTAL_UFW_BLOCKS=TOTAL_UFW_BLOCKS,
+        TOTAL_NGINX_REQUESTS=TOTAL_NGINX_REQUESTS,
         ip_count=len(ssh_attempts),
         country_count=len(country_attempts),
         city_count=len(city_attempts),
@@ -258,10 +707,16 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
         ufw_country_attempts=ufw_country_attempts,
         ufw_port_summary=ufw_port_summary,
         ufw_details=ufw_details,
-        successful_logins={},  # Placeholder for future enhancement
-        successful_country_attempts=[],  # Placeholder for future enhancement
-        severity_critical=[],  # Placeholder for future enhancement
-        severity_high=[],  # Placeholder for future enhancement
+        nginx_requests_count=len(nginx_access),
+        nginx_country_requests=nginx_country_requests,
+        nginx_status_summary=nginx_status_summary,
+        nginx_details=nginx_details,
+        nginx_errors=nginx_errors,
+        successful_logins=successful_logins,
+        successful_country_attempts=successful_country_attempts,
+        severity_critical=critical_events,
+        severity_high=high_events,
+        severity_medium=medium_events,
         report_time=report_time,
         from_date=from_date,
         to_date=to_date
@@ -280,13 +735,23 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
         'user_attempts': user_attempts,
         'ufw_blocks_count': len(ufw_blocks),
         'ufw_country_attempts': ufw_country_attempts,
-        'ufw_port_summary': ufw_port_summary
+        'ufw_port_summary': ufw_port_summary,
+        'nginx_requests_count': len(nginx_access),
+        'nginx_country_requests': nginx_country_requests,
+        'nginx_status_summary': nginx_status_summary,
+        'nginx_errors_count': len(nginx_errors),
+        'total_success': TOTAL_SUCCESS,
+        'critical_count': len(critical_events),
+        'high_count': len(high_events),
+        'medium_count': len(medium_events)
     }
 
 # Function to send an email with the report link using Postfix
 def send_email(report_url, recipient_email, total_attempts, ip_count, country_count, user_count, 
                top_countries, top_users, total_ufw_blocks, ufw_blocks_count, ufw_top_countries, 
-               ufw_top_ports, from_date, to_date, debug=False):
+               ufw_top_ports, total_nginx_requests, nginx_requests_count, nginx_top_countries,
+               nginx_status_summary, nginx_errors_count, total_success, critical_count, high_count, 
+               medium_count, from_date, to_date, debug=False):
     hostname = subprocess.check_output("hostname").decode("utf-8").strip()
 
     # Create email headers and body with summary
@@ -295,13 +760,32 @@ def send_email(report_url, recipient_email, total_attempts, ip_count, country_co
     body = f"""Security Report for {hostname}
 Period: {from_date} to {to_date}
 
-=== AUTHENTICATION FAILURES ===
-Total Login Attempts: {total_attempts}
+===============================================================
+                    SUMMARY OVERVIEW                       
+===============================================================
+
+[!] SUCCESSFUL LOGINS:        {total_success}
+[X] FAILED LOGIN ATTEMPTS:    {total_attempts} (from {ip_count} IPs across {country_count} countries)
+[#] UFW FIREWALL BLOCKS:      {total_ufw_blocks} (from {ufw_blocks_count} unique IPs)
+[@] WEB SERVER REQUESTS:      {total_nginx_requests} (from {nginx_requests_count} unique IPs)
+
+[CRITICAL] SECURITY EVENTS:   {critical_count}
+[HIGH]     SEVERITY EVENTS:   {high_count}
+[MEDIUM]   SEVERITY EVENTS:   {medium_count}
+
+===============================================================
+
+=== SUCCESSFUL LOGINS ===
+{total_success} successful authentication(s) detected.
+Review the detailed report to verify all logins are authorized.
+
+=== FAILED LOGIN ATTEMPTS ===
+Total Attempts: {total_attempts}
 Unique IP Addresses: {ip_count}
 Countries: {country_count}
 User IDs Targeted: {user_count}
 
-=== TOP 10 COUNTRIES (Authentication) ===
+=== TOP 10 COUNTRIES (Failed Attempts) ===
 """
     # Add top 10 countries
     for i, (country, count) in enumerate(top_countries[:10], 1):
@@ -329,7 +813,40 @@ User IDs Targeted: {user_count}
             port_name = port_names.get(port, f'Port {port}')
             body += f"{i:2d}. {port_name:20s} : {count:6d} blocks\n"
     
-    body += f"\n\nFull detailed report: {report_url}\n"
+    body += f"\n=== WEB SERVER ACTIVITY (NGINX) ===\n"
+    body += f"Total Requests: {total_nginx_requests}\n"
+    body += f"Unique IPs: {nginx_requests_count}\n"
+    
+    if nginx_status_summary:
+        body += "\n=== HTTP STATUS CODES ===\n"
+        status_names = {'200': 'OK', '304': 'Not Modified', '404': 'Not Found', 
+                       '403': 'Forbidden', '500': 'Server Error', '502': 'Bad Gateway'}
+        for status, count in nginx_status_summary[:10]:
+            status_name = status_names.get(status, f'Status {status}')
+            body += f"{status} {status_name:20s} : {count:6d} requests\n"
+    
+    if nginx_top_countries:
+        body += "\n=== TOP 10 COUNTRIES (Web Access) ===\n"
+        for i, (country, count) in enumerate(nginx_top_countries[:10], 1):
+            body += f"{i:2d}. {country:30s} : {count:6d} requests\n"
+    
+    if nginx_errors_count > 0:
+        body += f"\n[!] NGINX ERRORS: {nginx_errors_count} errors detected\n"
+    
+    # Add security events summary
+    body += f"\n=== SECURITY EVENTS BY SEVERITY ===\n"
+    body += f"Comprehensive monitoring from: auditd, SSH, nginx, rkhunter, AIDE, \n"
+    body += f"ClamAV, chkrootkit, Lynis, Tiger, and psad.\n\n"
+    body += f"[CRITICAL] Events:  {critical_count} - Immediate attention required\n"
+    body += f"[HIGH]     Severity: {high_count} - Review recommended\n"
+    body += f"[MEDIUM]   Severity: {medium_count} - Informational\n"
+    
+    if critical_count > 0:
+        body += f"\n*** WARNING: {critical_count} CRITICAL security events detected! ***\n"
+        body += f"    Review the detailed report immediately.\n"
+    
+    body += f"\n{'=' * 63}\n"
+    body += f"\nFull detailed report: {report_url}\n"
     
     email_content  = f"From: {sender_email}\n"
     email_content += f"To: {recipient_email}\n"
@@ -403,11 +920,13 @@ def main():
 
     args = parser.parse_args()
     
-    # Extract both SSH authentication failures and UFW firewall blocks
+    # Extract SSH authentication failures, UFW firewall blocks, and nginx access logs
     attack_attempts, TOTAL_ATTEMPTS = extract_attack_attempts(args.from_date, args.to_date,debug=args.debug)
     ufw_blocks, TOTAL_UFW_BLOCKS = extract_ufw_blocks(args.from_date, args.to_date,debug=args.debug)
+    nginx_access, nginx_errors, TOTAL_NGINX_REQUESTS = extract_nginx_logs(args.from_date, args.to_date,debug=args.debug)
     
-    stats = generate_html_report(attack_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, 
+    stats = generate_html_report(attack_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS,
+                                 nginx_access, TOTAL_NGINX_REQUESTS, nginx_errors,
                                  args.from_date, args.to_date,debug=args.debug)
 
     # Email the report link with summary statistics (unless --no-email flag is set)
@@ -426,6 +945,15 @@ def main():
                 stats['ufw_blocks_count'],
                 stats['ufw_country_attempts'],
                 stats['ufw_port_summary'],
+                TOTAL_NGINX_REQUESTS,
+                stats['nginx_requests_count'],
+                stats['nginx_country_requests'],
+                stats['nginx_status_summary'],
+                stats['nginx_errors_count'],
+                stats['total_success'],
+                stats['critical_count'],
+                stats['high_count'],
+                stats['medium_count'],
                 args.from_date,
                 args.to_date,
                 debug=args.debug

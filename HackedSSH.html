@@ -295,6 +295,17 @@
             pointer-events: none;
             z-index: 999;
         }
+
+        /* Clickable table rows */
+        .clickable-row {
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .clickable-row:hover {
+            transform: translateX(5px);
+            box-shadow: -5px 0 0 rgba(0, 255, 65, 0.5);
+        }
     </style>
 </head>
 
@@ -314,92 +325,100 @@
             <td>{{ report_time }}</td>
         </tr>
         <tr>
-            <td>From Date:</td>
-            <td>{{ from_date }}</td>
-        </tr>
-        <tr>
-            <td>To Date:</td>
-            <td>{{ to_date }}</td>
-        </tr>
-        <tr>
-            <td>Total Failed Attempts:</td>
-            <td>{{ TOTAL_ATTEMPTS }}</td>
-        </tr>
-        <tr style="background-color: rgba(0, 217, 255, 0.15);">
-            <td style="color: #00d9ff;"><strong>🛡️ Blocked by UFW Firewall:</strong></td>
-            <td style="color: #00d9ff;"><strong>{{ TOTAL_UFW_BLOCKS }}</strong></td>
-        </tr>
-        <tr style="background-color: rgba(255, 0, 85, 0.15);">
-            <td style="color: #ff0055;"><strong>🚨 Successful Logins:</strong></td>
-            <td style="color: #ff0055;"><strong>{{ TOTAL_SUCCESS }}</strong></td>
-        </tr>
-        <tr style="background-color: rgba(255, 0, 85, 0.1);">
-            <td style="color: #ff0055;">Critical Events:</td>
-            <td style="color: #ff0055;">{{ severity_critical|length }}</td>
-        </tr>
-        <tr style="background-color: rgba(255, 170, 0, 0.1);">
-            <td style="color: #ffaa00;">High Severity Events:</td>
-            <td style="color: #ffaa00;">{{ severity_high|length }}</td>
-        </tr>
-        <tr>
-            <td>By IP Address:</td>
-            <td>{{ ip_count }}</td>
-        </tr>
-        <tr>
-            <td>By Country:</td>
-            <td>{{ country_count }}</td>
-        </tr>
-        <tr>
-            <td>By City:</td>
-            <td>{{ city_count }}</td>
-        </tr>
-        <tr>
-            <td>By User:</td>
-            <td>{{ user_count }}</td>
-        </tr>
-        <tr style="background-color: rgba(0, 217, 255, 0.1);">
-            <td style="color: #00d9ff;">Unique IPs Blocked by UFW:</td>
-            <td style="color: #00d9ff;">{{ ufw_blocks_count }}</td>
-        </tr>
-        <tr>
             <td>Hostname:</td>
             <td id="hostname">Loading...</td>
         </tr>
+        <tr>
+            <td>Period:</td>
+            <td>{{ from_date }} to {{ to_date }}</td>
+        </tr>
+        <tr class="clickable-row" style="background-color: rgba(0, 255, 65, 0.05);" onclick="location.href='#failed-attempts'">
+            <td style="color: #00ff41;">❌ Total Failed Attempts:</td>
+            <td style="color: #00ff41;">{{ TOTAL_ATTEMPTS }}</td>
+        </tr>
+        <tr class="clickable-row" style="background-color: rgba(0, 217, 255, 0.15);" onclick="location.href='#ufw-blocks'">
+            <td style="color: #00d9ff;"><strong>🛡️ Blocked by UFW Firewall:</strong></td>
+            <td style="color: #00d9ff;"><strong>{{ TOTAL_UFW_BLOCKS }}</strong></td>
+        </tr>
+        <tr class="clickable-row" style="background-color: rgba(255, 0, 85, 0.15);" onclick="location.href='#successful-logins'">
+            <td style="color: #ff0055;"><strong>🚨 Successful Logins:</strong></td>
+            <td style="color: #ff0055;"><strong>{{ TOTAL_SUCCESS }}</strong></td>
+        </tr>
+        <tr class="clickable-row" style="background-color: rgba(255, 0, 85, 0.15);" onclick="location.href='#security-events'">
+            <td style="color: #ff0055;"><strong>🔴 Critical Security Events:</strong></td>
+            <td style="color: #ff0055;"><strong>{{ severity_critical|length }}</strong></td>
+        </tr>
+        <tr class="clickable-row" style="background-color: rgba(255, 170, 0, 0.1);" onclick="location.href='#security-events'">
+            <td style="color: #ffaa00;">⚠️ High Severity Events:</td>
+            <td style="color: #ffaa00;">{{ severity_high|length }}</td>
+        </tr>
+        <tr class="clickable-row" style="background-color: rgba(0, 217, 255, 0.05);" onclick="location.href='#security-events'">
+            <td style="color: #00d9ff;">ℹ️ Medium Severity Events:</td>
+            <td style="color: #00d9ff;">{{ severity_medium|length }}</td>
+        </tr>
+        <tr class="clickable-row" style="background-color: rgba(0, 217, 255, 0.1);" onclick="location.href='#ufw-blocks'">
+            <td style="color: #00d9ff;">🔥 Unique IPs Blocked by UFW:</td>
+            <td style="color: #00d9ff;">{{ ufw_blocks_count }}</td>
+        </tr>
+        <tr class="clickable-row" style="background-color: rgba(0, 255, 65, 0.1);" onclick="location.href='#nginx-activity'">
+            <td style="color: #00ff41;">🌐 Web Server Requests (nginx):</td>
+            <td style="color: #00ff41;">{{ TOTAL_NGINX_REQUESTS }} ({{ nginx_requests_count }} unique IPs)</td>
+        </tr>
     </table>
 
-    <h2>🚨 Successful Logins</h2>
+    <h2 id="successful-logins">🚨 Successful Logins</h2>
     {% if TOTAL_SUCCESS > 0 %}
     <div class="alert-box danger">
-        <h3>⚠️ WARNING: {{ TOTAL_SUCCESS }} Successful Login(s) Detected!</h3>
-        <button class="collapsible critical">View Successful Login Details</button>
+        <p><strong>{{ TOTAL_SUCCESS }}</strong> successful authentication(s) detected during this period.</p>
+        <p>These are legitimate logins that bypassed authentication. Review the IPs, users, and authentication methods to ensure they are authorized.</p>
+    </div>
+    
+    <button class="collapsible critical">View Successful Login Details</button>
         <div class="content">
+            <div class="table-wrapper">
             <table>
                 <tr>
                     <th>IP Address</th>
                     <th>User</th>
-                    <th>Count</th>
+                        <th>Method</th>
                     <th>Country</th>
+                        <th>City</th>
+                        <th>Login Count</th>
+                        <th>Timestamps</th>
                 </tr>
-                {% for ip_address, users in successful_logins.items() %}
-                    {% for user, count in users.items() %}
+                    {% for ip_address, login_data in successful_logins.items() %}
                     <tr>
                         <td><a href="https://www.abuseipdb.com/whois/{{ ip_address }}" target="_blank">{{ ip_address }}</a></td>
-                        <td><strong>{{ user }}</strong></td>
-                        <td>{{ count }}</td>
-                        <td>{{ successful_country_attempts|map(attribute=0)|list|first if successful_country_attempts else "Unknown" }}</td>
+                        <td><strong>{{ login_data.user }}</strong></td>
+                        <td>
+                            {% if login_data.method == 'publickey' %}
+                                <span style="color: #00ff41;">🔑 SSH Key</span>
+                            {% else %}
+                                <span style="color: #ffaa00;">🔒 Password</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ login_data.country }}</td>
+                        <td>{{ login_data.city }}</td>
+                        <td>{{ login_data.count }}</td>
+                        <td style="font-size: 0.9em;">{{ login_data.timestamps|join(', ') if login_data.timestamps|length <= 3 else (login_data.timestamps[:3]|join(', ') + '...') }}</td>
                     </tr>
-                    {% endfor %}
                 {% endfor %}
             </table>
+            </div>
         </div>
-    </div>
     {% else %}
     <div class="alert-box success">
         <h3>✅ No Successful Logins Detected</h3>
+        <p>All authentication attempts were blocked - system security is intact.</p>
     </div>
     {% endif %}
 
-    <h2>🔒 Failed Login Attempts</h2>
+    <h2 id="failed-attempts">🔒 Failed Login Attempts</h2>
+    <div class="alert-box warning">
+        <p><strong>{{ TOTAL_ATTEMPTS }}</strong> failed authentication attempts from <strong>{{ ip_count }}</strong> unique IP addresses across <strong>{{ country_count }}</strong> countries.</p>
+        <p>These attacks were blocked by SSH authentication. Persistent attackers are reported to AbuseIPDB and blocked by Fail2Ban.</p>
+    </div>
+    
     <button class="collapsible">Attempts by Country</button>
     <div class="content">
         {% if country_attempts %}
@@ -457,7 +476,7 @@
         </table>
     </div>
 
-    <h2>🛡️ UFW Firewall Blocks</h2>
+    <h2 id="ufw-blocks">🛡️ UFW Firewall Blocks</h2>
     {% if TOTAL_UFW_BLOCKS > 0 %}
     <div class="alert-box info">
         <p><strong>{{ TOTAL_UFW_BLOCKS }}</strong> connection attempts were blocked at the firewall level before reaching services.</p>
@@ -467,18 +486,39 @@
     <button class="collapsible">Blocks by Country</button>
     <div class="content">
         {% if ufw_country_attempts %}
-            <table>
-                <tr>
-                    <th>Country</th>
-                    <th>Total Blocks</th>
-                </tr>
-                {% for country, count in ufw_country_attempts %}
-                <tr>
-                    <td>{{ country }}</td>
-                    <td>{{ count }}</td>
-                </tr>
-                {% endfor %}
-            </table>
+            {% for country, count in ufw_country_attempts %}
+            <button class="collapsible">{{ country }}: {{ count }} blocks</button>
+            <div class="content">
+                <div class="table-wrapper">
+                    <table>
+                        <tr>
+                            <th>IP Address</th>
+                            <th>City</th>
+                            <th>Ports Targeted</th>
+                            <th>Total Blocks</th>
+                        </tr>
+                        {% if ufw_details %}
+                            {% for ip_address, details in ufw_details.items() %}
+                                {% if details.country == country %}
+                                <tr>
+                                    <td><a href="https://www.abuseipdb.com/whois/{{ ip_address }}" target="_blank">{{ ip_address }}</a></td>
+                                    <td>{{ details.city }}</td>
+                                    <td>
+                                        {% for port, count in details.ports.items() %}
+                                            {{ port }}({{ count }}){% if not loop.last %}, {% endif %}
+                                        {% endfor %}
+                                    </td>
+                                    <td>{{ details.total }}</td>
+                                </tr>
+                                {% endif %}
+                            {% endfor %}
+                        {% else %}
+                            <tr><td colspan="4">No data available for this country.</td></tr>
+                        {% endif %}
+                    </table>
+                </div>
+            </div>
+            {% endfor %}
         {% else %}
             <p>No UFW block data by country available.</p>
         {% endif %}
@@ -516,36 +556,6 @@
             <p>No UFW block data by port available.</p>
         {% endif %}
     </div>
-
-    <button class="collapsible">Detailed UFW Blocks by IP Address</button>
-    <div class="content">
-        {% if ufw_details %}
-            <table>
-                <tr>
-                    <th>IP Address</th>
-                    <th>Country</th>
-                    <th>City</th>
-                    <th>Ports Targeted</th>
-                    <th>Total Blocks</th>
-                </tr>
-                {% for ip_address, details in ufw_details.items() %}
-                <tr>
-                    <td><a href="https://www.abuseipdb.com/whois/{{ ip_address }}" target="_blank">{{ ip_address }}</a></td>
-                    <td>{{ details.country }}</td>
-                    <td>{{ details.city }}</td>
-                    <td>
-                        {% for port, count in details.ports.items() %}
-                            {{ port }}({{ count }}){% if not loop.last %}, {% endif %}
-                        {% endfor %}
-                    </td>
-                    <td>{{ details.total }}</td>
-                </tr>
-                {% endfor %}
-            </table>
-        {% else %}
-            <p>No detailed UFW block data available.</p>
-        {% endif %}
-    </div>
     {% else %}
     <div class="alert-box success">
         <h3>✅ No UFW Blocks Detected</h3>
@@ -553,50 +563,208 @@
     </div>
     {% endif %}
 
-    <h2>📊 Security Events by Severity</h2>
+    <h2 id="nginx-activity">🌐 Web Server Activity (nginx)</h2>
+    {% if TOTAL_NGINX_REQUESTS > 0 %}
+    <div class="alert-box success">
+        <p><strong>{{ TOTAL_NGINX_REQUESTS }}</strong> web requests from <strong>{{ nginx_requests_count }}</strong> unique external IPs.</p>
+        <p>This section shows legitimate web traffic and potential scanning activity.</p>
+    </div>
+
+    <button class="collapsible">Requests by Country</button>
+    <div class="content">
+        {% if nginx_country_requests %}
+            {% for country, count in nginx_country_requests %}
+            <button class="collapsible">{{ country }}: {{ count }} requests</button>
+            <div class="content">
+                <div class="table-wrapper">
+                    <table>
+                        <tr>
+                            <th>IP Address</th>
+                            <th>City</th>
+                            <th>Status Codes</th>
+                            <th>Total Requests</th>
+                        </tr>
+                        {% if nginx_details %}
+                            {% for ip_address, details in nginx_details.items() %}
+                                {% if details.country == country %}
+                                <tr>
+                                    <td><a href="https://www.abuseipdb.com/whois/{{ ip_address }}" target="_blank">{{ ip_address }}</a></td>
+                                    <td>{{ details.city }}</td>
+                                    <td>
+                                        {% for status, count in details.statuses.items() %}
+                                            {{ status }}({{ count }}){% if not loop.last %}, {% endif %}
+                                        {% endfor %}
+                                    </td>
+                                    <td>{{ details.total }}</td>
+                                </tr>
+                                {% endif %}
+                            {% endfor %}
+                        {% else %}
+                            <tr><td colspan="4">No data available for this country.</td></tr>
+                        {% endif %}
+                    </table>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <p>No web request data by country available.</p>
+        {% endif %}
+    </div>
+
+    <button class="collapsible">HTTP Status Codes</button>
+    <div class="content">
+        {% if nginx_status_summary %}
+            <table>
+                <tr>
+                    <th>Status Code</th>
+                    <th>Description</th>
+                    <th>Total Requests</th>
+                </tr>
+                {% for status, count in nginx_status_summary %}
+                <tr>
+                    <td>{{ status }}</td>
+                    <td>
+                        {% if status == '200' %}✅ OK
+                        {% elif status == '304' %}✅ Not Modified (Cached)
+                        {% elif status == '404' %}⚠️ Not Found
+                        {% elif status == '403' %}🔒 Forbidden
+                        {% elif status == '500' %}🔴 Server Error
+                        {% elif status == '502' %}🔴 Bad Gateway
+                        {% elif status == '400' %}⚠️ Bad Request
+                        {% else %}Status {{ status }}
+                        {% endif %}
+                    </td>
+                    <td>{{ count }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <p>No status code data available.</p>
+        {% endif %}
+    </div>
+
+    {% if nginx_errors|length > 0 %}
+    <button class="collapsible warning-level">⚠️ nginx Errors ({{ nginx_errors|length }})</button>
+    <div class="content">
+        <div class="table-wrapper">
+            <table>
+                <tr>
+                    <th>Time</th>
+                    <th>Level</th>
+                    <th>Message</th>
+                </tr>
+                {% for error in nginx_errors %}
+                <tr>
+                    <td>{{ error.time.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    <td>{{ error.level }}</td>
+                    <td style="font-size: 0.9em;">{{ error.message }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+    {% endif %}
+    {% else %}
+    <div class="alert-box info">
+        <h3>ℹ️ No nginx Data Available</h3>
+        <p>Either nginx is not running or no external requests were made during this period.</p>
+    </div>
+    {% endif %}
+
+    <h2 id="security-events">📊 Security Events by Severity</h2>
+    <div class="alert-box info">
+        <p>Comprehensive security monitoring from multiple sources: <strong>auditd</strong>, <strong>SSH</strong>, <strong>nginx</strong>, <strong>rkhunter</strong>, <strong>AIDE</strong>, <strong>ClamAV</strong>, <strong>chkrootkit</strong>, <strong>Lynis</strong>, <strong>Tiger</strong>, and <strong>psad</strong>.</p>
+        <p>Events are categorized by severity: 🔴 Critical ({{ severity_critical|length }}), ⚠️ High ({{ severity_high|length }}), ℹ️ Medium ({{ severity_medium|length }})</p>
+    </div>
     
     {% if severity_critical|length > 0 %}
     <button class="collapsible critical">🚨 Critical Events ({{ severity_critical|length }})</button>
     <div class="content">
+        <div class="table-wrapper">
         <table>
             <tr>
                 <th>Service</th>
+                    <th>Event Type</th>
                 <th>User</th>
                 <th>IP Address</th>
                 <th>Timestamp</th>
+                    <th>Details</th>
             </tr>
             {% for event in severity_critical %}
-            <tr style="background-color: #ffe6e6;">
-                <td>{{ event.service }}</td>
+                <tr style="background-color: rgba(255, 0, 85, 0.1);">
+                    <td style="color: #ff0055;"><strong>{{ event.service }}</strong></td>
+                    <td style="color: #ff0055;">{{ event.event }}</td>
                 <td>{{ event.user }}</td>
                 <td><a href="https://www.abuseipdb.com/whois/{{ event.ip }}" target="_blank">{{ event.ip }}</a></td>
                 <td>{{ event.timestamp }}</td>
+                    <td style="font-size: 0.9em; max-width: 400px;">{{ event.message[:150] }}{% if event.message|length > 150 %}...{% endif %}</td>
             </tr>
             {% endfor %}
         </table>
     </div>
+    </div>
+    {% else %}
+    <button class="collapsible" disabled style="opacity: 0.5; cursor: not-allowed;">🚨 Critical Events (0)</button>
     {% endif %}
     
     {% if severity_high|length > 0 %}
     <button class="collapsible warning-level">⚠️ High Severity Events ({{ severity_high|length }})</button>
     <div class="content">
+        <div class="table-wrapper">
         <table>
             <tr>
                 <th>Service</th>
+                    <th>Event Type</th>
                 <th>User</th>
                 <th>IP Address</th>
                 <th>Timestamp</th>
+                    <th>Details</th>
             </tr>
             {% for event in severity_high %}
-            <tr style="background-color: #fff3cd;">
-                <td>{{ event.service }}</td>
+                <tr style="background-color: rgba(255, 170, 0, 0.1);">
+                    <td style="color: #ffaa00;"><strong>{{ event.service }}</strong></td>
+                    <td style="color: #ffaa00;">{{ event.event }}</td>
                 <td>{{ event.user }}</td>
                 <td><a href="https://www.abuseipdb.com/whois/{{ event.ip }}" target="_blank">{{ event.ip }}</a></td>
                 <td>{{ event.timestamp }}</td>
+                    <td style="font-size: 0.9em; max-width: 400px;">{{ event.message[:150] }}{% if event.message|length > 150 %}...{% endif %}</td>
             </tr>
             {% endfor %}
         </table>
     </div>
+    </div>
+    {% else %}
+    <button class="collapsible" disabled style="opacity: 0.5; cursor: not-allowed;">⚠️ High Severity Events (0)</button>
+    {% endif %}
+    
+    {% if severity_medium|length > 0 %}
+    <button class="collapsible">ℹ️ Medium Severity Events ({{ severity_medium|length }})</button>
+    <div class="content">
+        <div class="table-wrapper">
+            <table>
+                <tr>
+                    <th>Service</th>
+                    <th>Event Type</th>
+                    <th>User</th>
+                    <th>IP Address</th>
+                    <th>Timestamp</th>
+                    <th>Details</th>
+                </tr>
+                {% for event in severity_medium %}
+                <tr style="background-color: rgba(0, 217, 255, 0.05);">
+                    <td style="color: #00d9ff;"><strong>{{ event.service }}</strong></td>
+                    <td style="color: #00d9ff;">{{ event.event }}</td>
+                    <td>{{ event.user }}</td>
+                    <td><a href="https://www.abuseipdb.com/whois/{{ event.ip }}" target="_blank">{{ event.ip }}</a></td>
+                    <td>{{ event.timestamp }}</td>
+                    <td style="font-size: 0.9em; max-width: 400px;">{{ event.message[:150] }}{% if event.message|length > 150 %}...{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </div>
+    {% else %}
+    <button class="collapsible" disabled style="opacity: 0.5; cursor: not-allowed;">ℹ️ Medium Severity Events (0)</button>
     {% endif %}
 
     <h2>🗺️ Map of Attack Attempts</h2>
