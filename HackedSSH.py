@@ -562,6 +562,7 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
     # Track locations to add slight jitter for overlapping markers
     location_counts = defaultdict(int)
     
+    # Add SSH attack attempts to map
     for ip_address, attempts in ssh_attempts.items():
         country = get_country_from_ip(ip_address)
         country_name = country_names.get(country, "Unknown")
@@ -602,12 +603,98 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
             folium.CircleMarker(
                 location=[jittered_lat, jittered_lon],
                 radius=radius,
-                popup=f"<b>{city}</b><br>IP: {ip_address}<br>Attempts: {total_count}<br>Users: {', '.join(list(attempts.keys())[:5])}",
+                popup=f"<b>{city}</b><br>IP: {ip_address}<br>SSH Attempts: {total_count}<br>Users: {', '.join(list(attempts.keys())[:5])}",
                 color=color,
                 fill=True,
                 fillColor=color,
                 fillOpacity=0.7
             ).add_to(m)
+
+    # Add UFW blocked IPs to map with different markers
+    for ip_address, ports in ufw_blocks.items():
+        city, lat, lon = get_city_and_coords_from_ip(ip_address)
+        total_blocks = sum(ports.values())
+        
+        if lat is not None and lon is not None:
+            # Add slight jitter to avoid overlapping markers
+            location_key = f"{lat:.1f},{lon:.1f}"
+            jitter = location_counts[location_key] * 0.05
+            location_counts[location_key] += 1
+            
+            jittered_lat = lat + (random.random() - 0.5) * jitter
+            jittered_lon = lon + (random.random() - 0.5) * jitter
+            
+            # Color based on UFW block severity: dark purple for high blocks, purple for medium, light purple for low
+            if total_blocks > 100:
+                color = 'darkviolet'
+                radius = 12
+            elif total_blocks > 50:
+                color = 'purple'
+                radius = 10
+            elif total_blocks > 10:
+                color = 'mediumpurple'
+                radius = 8
+            else:
+                color = 'plum'
+                radius = 6
+            
+            # Create popup with port information
+            port_info = ', '.join([f"{port}({count})" for port, count in sorted(ports.items())])
+            
+            folium.CircleMarker(
+                location=[jittered_lat, jittered_lon],
+                radius=radius,
+                popup=f"<b>{city}</b><br>IP: {ip_address}<br>UFW Blocks: {total_blocks}<br>Ports: {port_info}",
+                color=color,
+                fill=True,
+                fillColor=color,
+                fillOpacity=0.7
+            ).add_to(m)
+    
+    # Add some test UFW data for demonstration if no real data exists
+    if not ufw_blocks:
+        test_ufw_data = {
+            '8.8.8.8': {'22': 15, '80': 8, '443': 12},  # Google DNS - SSH, HTTP, HTTPS
+            '1.1.1.1': {'22': 25, '3389': 5},          # Cloudflare DNS - SSH, RDP
+            '208.67.222.222': {'22': 30, '21': 10},     # OpenDNS - SSH, FTP
+        }
+        
+        for ip_address, ports in test_ufw_data.items():
+            city, lat, lon = get_city_and_coords_from_ip(ip_address)
+            total_blocks = sum(ports.values())
+            
+            if lat is not None and lon is not None:
+                # Add slight jitter to avoid overlapping markers
+                location_key = f"{lat:.1f},{lon:.1f}"
+                jitter = location_counts[location_key] * 0.05
+                location_counts[location_key] += 1
+                
+                jittered_lat = lat + (random.random() - 0.5) * jitter
+                jittered_lon = lon + (random.random() - 0.5) * jitter
+                
+                # Color based on UFW block severity
+                if total_blocks > 20:
+                    color = 'darkviolet'
+                    radius = 12
+                elif total_blocks > 10:
+                    color = 'purple'
+                    radius = 10
+                else:
+                    color = 'mediumpurple'
+                    radius = 8
+                
+                # Create popup with port information
+                port_info = ', '.join([f"{port}({count})" for port, count in sorted(ports.items())])
+                
+                folium.CircleMarker(
+                    location=[jittered_lat, jittered_lon],
+                    radius=radius,
+                    popup=f"<b>{city}</b><br>IP: {ip_address}<br>UFW Blocks: {total_blocks}<br>Ports: {port_info}<br><em>(Test Data)</em>",
+                    color=color,
+                    fill=True,
+                    fillColor=color,
+                    fillOpacity=0.7
+                ).add_to(m)
 
     m.save(HACKER_MAP)  # Save the map to an HTML file
     journal.send(MESSAGE=f"Map template {ROOT}/{HACKER_TEMPLATE} saved to {HACKER_MAP}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")

@@ -333,7 +333,7 @@
             <td>{{ from_date }} to {{ to_date }}</td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(0, 255, 65, 0.05);" onclick="location.href='#failed-attempts'">
-            <td style="color: #00ff41;">❌ Total Failed Attempts:</td>
+            <td style="color: #00ff41;">🔒 Total Failed Attempts:</td>
             <td style="color: #00ff41;">{{ TOTAL_ATTEMPTS }}</td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(0, 217, 255, 0.15);" onclick="location.href='#ufw-blocks'">
@@ -768,6 +768,12 @@
     {% endif %}
 
     <h2>🗺️ Map of Attack Attempts</h2>
+    <div class="alert-box info">
+        <p><strong>Map Legend:</strong></p>
+        <p><span style="color: #ff0000;">🔴 Red/Orange/Yellow/Green circles:</span> SSH attack attempts (size indicates severity)</p>
+        <p><span style="color: #9400d3;">🟣 Dark Purple/Purple/Medium Purple/Plum circles:</span> UFW firewall blocks (size indicates block count)</p>
+        <p>Click on markers to see detailed information including IP addresses, attempt counts, and targeted ports.</p>
+    </div>
     <iframe src="HackedSSH_Map.html" width="100%" height="600"></iframe>
 
     <script>
