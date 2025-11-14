@@ -21,6 +21,8 @@ if os.path.exists('/usr/local/bin/HackedSSH.ini'):
 else:
     ROOT = '.'
 
+IP_REGEX = r"(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9a-fA-F:]+)"
+
 config = configparser.ConfigParser()
 config.read(f'{ROOT}/HackedSSH.ini')
 sender_email = config['EMAIL']['sender_email']
@@ -28,6 +30,8 @@ recipient_email = config['EMAIL']['recipient_email']
 hostname = config['WEB']['hostname']
 report_url = config['WEB']['report_url']
 local_url = config['WEB']['local_url']
+# Optional map tiles configuration; defaults to CartoDB Positron (English labels)
+tiles_default = (config.get('MAP', 'tiles', fallback='CartoDB positron')).strip()
 
 TOTAL_ATTEMPTS   = 0
 HACKER_REPORT    = "/var/www/html/HackedSSH_Report.html"
@@ -43,41 +47,45 @@ def extract_attack_attempts(from_date, to_date,debug=False):
     TOTAL_ATTEMPTS = 0
     
     try:
-        # Fetch logs from journalctl for multiple services
-        journal_logs = subprocess.check_output(
-            [
-                "journalctl",
-                "_SYSTEMD_UNIT=ssh.service", "_SYSTEMD_UNIT=xrdp.service",
-                "_SYSTEMD_UNIT=vsftpd.service", "_SYSTEMD_UNIT=apache2.service",
-                "_SYSTEMD_UNIT=nginx.service", "_SYSTEMD_UNIT=mysql.service",
-                "_SYSTEMD_UNIT=rdp.service", "_SYSTEMD_UNIT=smtp.service",
-                "_SYSTEMD_UNIT=openvpn.service", "_SYSTEMD_UNIT=wireshark.service",
-                "_SYSTEMD_UNIT=rdc.service", "_SYSTEMD_UNIT=telnet.service",
-                "_SYSTEMD_UNIT=sftp.service", f"--since={from_date}", f"--until={to_date}", "--no-pager",
-            ]
-        ).decode("utf-8")
+        # Fetch logs per unit (journalctl matches are AND-ed; do OR by merging per-unit output)
+        units = [
+            "ssh.service", "xrdp.service", "vsftpd.service", "apache2.service",
+            "nginx.service", "mysql.service", "rdp.service", "smtp.service",
+            "openvpn.service", "wireshark.service", "rdc.service", "telnet.service",
+            "sftp.service"
+        ]
+        logs = []
+        for unit in units:
+            try:
+                out = subprocess.check_output(
+                    ["journalctl", f"_SYSTEMD_UNIT={unit}", f"--since={from_date}", f"--until={to_date}", "--no-pager"]
+                ).decode("utf-8")
+                logs.append(out)
+            except subprocess.CalledProcessError:
+                continue
+        journal_logs = "\n".join(logs)
         
         # Define patterns for different services and set default user id when not available
         patterns = {
-            "ssh": (re.compile(r"Failed password for (?:invalid user )?(\w+) from ([0-9.]+)"), None),
-            "ssh1": (re.compile(r"Unable to negotiate with ([0-9.]+)"), "None"),
-            "ssh2": (re.compile(r"Connection closed by ([0-9.]+)"), "None"),
-            "ssh3": (re.compile(r"Connection closed by (?:invalid user ?(\w+)) ([0-9.]+)"), None),
-            "ssh4": (re.compile(r"banner exchange: Connection from ([0-9.]+)"), "None"),
-            "ssh5": (re.compile(r"Connection reset by ([0-9.]+)"), "None"),
-            "root": (re.compile(r"User (\w+) from ([0-9.]+)"), "None"),
-            "xrdp": (re.compile(r"xrdp-sesman\[\d+\]: (?:pam_unix\(xrdp-sesman:auth\): authentication failure|Failed to start session for user (\w+)) from ([0-9.]+)"), "None"),
+            "ssh": (re.compile(rf"Failed password for (?:invalid user )?(\w+) from ({IP_REGEX})"), None),
+            "ssh1": (re.compile(rf"Unable to negotiate with ({IP_REGEX})"), "None"),
+            "ssh2": (re.compile(rf"Connection closed by ({IP_REGEX})"), "None"),
+            "ssh3": (re.compile(rf"Connection closed by (?:invalid user ?(\w+)) ({IP_REGEX})"), None),
+            "ssh4": (re.compile(rf"banner exchange: Connection from ({IP_REGEX})"), "None"),
+            "ssh5": (re.compile(rf"Connection reset by ({IP_REGEX})"), "None"),
+            "root": (re.compile(rf"User (\w+) from ({IP_REGEX})"), "None"),
+            "xrdp": (re.compile(rf"xrdp-sesman\[\d+\]: (?:pam_unix\(xrdp-sesman:auth\): authentication failure|Failed to start session for user (\w+)) from ({IP_REGEX})"), "None"),
             "xrdp_ipv6": (re.compile(r"::ffff:([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)"), "None"),
-            "ftp": (re.compile(r"vsftpd: pam_unix\(vsftpd:auth\): authentication failure;.*rhost=([0-9.]+)"), "None"),
-            "apache": (re.compile(r"apache2: (?:Invalid user|Failed login) (\w+) from ([0-9.]+)"), None),
-            "nginx": (re.compile(r'nginx.*"GET.*" 401 .* from ([0-9.]+)'), "None"),
-            "mysql": (re.compile(r"Access denied for user '(\w+)'@'([0-9.]+)'"), None),
-            "smtp": (re.compile(r"postfix/smtpd.*: warning: ([0-9.]+): SASL .* authentication failed"), "None"),
-            "openvpn": (re.compile(r"openvpn\[\d+\]: (\w+\/)?(\w+)\/([0-9.]+): (?:AUTH_FAILED|TLS handshake failed)"), None),
-            "wireshark": (re.compile(r"wireshark.*Authentication failure from ([0-9.]+)"), "None"),
-            "rdc": (re.compile(r"rdc.*: Failed connection attempt from ([0-9.]+)"), "None"),
-            "telnet": (re.compile(r"telnetd: .* login failed for (\w+) from ([0-9.]+)"), None),
-            "sftp": (re.compile(r"sftp-server\[\d+\]: (\w+): user auth failure from ([0-9.]+)"), None)
+            "ftp": (re.compile(rf"vsftpd: pam_unix\(vsftpd:auth\): authentication failure;.*rhost=({IP_REGEX})"), "None"),
+            "apache": (re.compile(rf"apache2: (?:Invalid user|Failed login) (\w+) from ({IP_REGEX})"), None),
+            "nginx": (re.compile(rf'nginx.*"GET.*" 401 .* from ({IP_REGEX})'), "None"),
+            "mysql": (re.compile(rf"Access denied for user '(\w+)'@'({IP_REGEX})'"), None),
+            "smtp": (re.compile(rf"postfix/smtpd.*: warning: ({IP_REGEX}): SASL .* authentication failed"), "None"),
+            "openvpn": (re.compile(rf"openvpn\[\d+\]: (\w+\/)?(\w+)\/({IP_REGEX}): (?:AUTH_FAILED|TLS handshake failed)"), None),
+            "wireshark": (re.compile(rf"wireshark.*Authentication failure from ({IP_REGEX})"), "None"),
+            "rdc": (re.compile(rf"rdc.*: Failed connection attempt from ({IP_REGEX})"), "None"),
+            "telnet": (re.compile(rf"telnetd: .* login failed for (\w+) from ({IP_REGEX})"), None),
+            "sftp": (re.compile(rf"sftp-server\[\d+\]: (\w+): user auth failure from ({IP_REGEX})"), None)
         }
 
         # Process each line in the journal logs
@@ -147,16 +155,16 @@ def extract_nginx_logs(from_date, to_date, debug=False):
     TOTAL_NGINX_REQUESTS = 0
     
     try:
-        # Parse nginx access log using sudo cat for permissions
+        # Parse nginx access logs (including rotated .1 and .gz)
         # Format: IP - - [date] "REQUEST" status bytes "referrer" "user-agent"
         access_log = subprocess.check_output(
-            ["cat", "/var/log/nginx/access.log"]
+            ["bash", "-lc", "zcat -f /var/log/nginx/access.log* 2>/dev/null || cat /var/log/nginx/access.log 2>/dev/null"]
         ).decode("utf-8")
         
         for line in access_log.splitlines():
             try:
                 # Extract IP, date, status code
-                match = re.match(r'^(\S+) - - \[([^\]]+)\] "([^"]*)" (\d+)', line)
+                match = re.match(rf'^({IP_REGEX}) - - \[([^\]]+)\] "([^"]*)" (\d+)', line)
                 if match:
                     ip_address = match.group(1)
                     log_date_str = match.group(2)
@@ -187,10 +195,10 @@ def extract_nginx_logs(from_date, to_date, debug=False):
             except Exception as e:
                 continue  # Skip malformed lines
                     
-        # Parse nginx error log
+        # Parse nginx error logs (including rotated)
         try:
             error_log = subprocess.check_output(
-                ["cat", "/var/log/nginx/error.log"]
+                ["bash", "-lc", "zcat -f /var/log/nginx/error.log* 2>/dev/null || cat /var/log/nginx/error.log 2>/dev/null"]
             ).decode("utf-8")
             
             for line in error_log.splitlines():
@@ -401,10 +409,9 @@ def extract_security_events(ssh_attempts, nginx_access, nginx_errors, from_date,
     
     # 9. Check auditd logs for suspicious activity
     try:
-        audit_logs = subprocess.check_output([
-            "ausearch", "-ts", "yesterday", "-m", "USER_AUTH,USER_LOGIN,EXECVE",
-            "-i"
-        ], stderr=subprocess.DEVNULL).decode("utf-8")
+        audit_logs = subprocess.check_output(
+            ["bash", "-lc", f"ausearch -ts '{from_date}' -te '{to_date}' -m USER_AUTH,USER_LOGIN,EXECVE -i 2>/dev/null"]
+        ).decode("utf-8")
         
         for line in audit_logs.splitlines():
             if "failed" in line.lower():
@@ -550,10 +557,53 @@ def get_city_from_ip(ip_address):
         return "Unknown"
 
 # Function to generate HTML report
-def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, nginx_access, TOTAL_NGINX_REQUESTS, nginx_errors, from_date, to_date,debug=False):
+def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, nginx_access, TOTAL_NGINX_REQUESTS, nginx_errors, from_date, to_date,debug=False, tiles_override=None):
     env = Environment(loader=FileSystemLoader(ROOT))
     template = env.get_template(HACKER_TEMPLATE)
-    m = folium.Map(location=[0, 0], zoom_start=2)  # Create a map object
+    # Choose tiles: CLI override > config default
+    base_tiles = tiles_override if tiles_override else tiles_default
+    m = folium.Map(location=[0, 0], zoom_start=2, tiles=base_tiles)  # Create a map object with selected tiles
+    # Add alternative base layers for easy backout/switching
+    try:
+        if base_tiles.lower() != 'openstreetmap':
+            folium.TileLayer('OpenStreetMap', name='OpenStreetMap').add_to(m)
+        if base_tiles.lower() != 'cartodb positron':
+            folium.TileLayer('CartoDB positron', name='CartoDB Positron').add_to(m)
+        # Optional: add Dark Matter as another alternative
+        if base_tiles.lower() != 'cartodb dark_matter':
+            folium.TileLayer('CartoDB dark_matter', name='CartoDB Dark Matter').add_to(m)
+        folium.LayerControl(collapsed=True).add_to(m)
+    except Exception as e:
+        # Non-fatal if a tile provider name is not available in this folium version
+        journal.send(MESSAGE=f"Tile layer setup warning: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+    # Extract security events early so we can add them to the map
+    # Wrap in try/except to prevent errors from breaking map generation
+    try:
+        critical_events, high_events, medium_events, successful_logins = extract_security_events(
+            ssh_attempts, nginx_access, nginx_errors, from_date, to_date, debug
+        )
+    except Exception as e:
+        journal.send(MESSAGE=f"Error extracting security events for map: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+        if debug:
+            print(f"Warning: Error extracting security events: {e}")
+        critical_events, high_events, medium_events, successful_logins = [], [], [], {}
+    
+    # Collect unique IPs from security events
+    security_event_ips = {
+        'critical': set(),
+        'high': set(),
+        'medium': set()
+    }
+    for event in critical_events:
+        if event.get('ip') and event['ip'] != 'localhost':
+            security_event_ips['critical'].add(event['ip'])
+    for event in high_events:
+        if event.get('ip') and event['ip'] != 'localhost':
+            security_event_ips['high'].add(event['ip'])
+    for event in medium_events:
+        if event.get('ip') and event['ip'] != 'localhost':
+            security_event_ips['medium'].add(event['ip'])
+    
     country_attempts = defaultdict(int)
     user_attempts = defaultdict(int)
     city_attempts = defaultdict(int)
@@ -695,18 +745,186 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                     fillColor=color,
                     fillOpacity=0.7
                 ).add_to(m)
-
+    
+    # Add security event IPs to map (Critical/High/Medium)
+    ENABLE_SECURITY_EVENT_MARKERS = True
+    
+    if ENABLE_SECURITY_EVENT_MARKERS:
+        # Add security event IPs directly to map (not using FeatureGroups to avoid breaking the map)
+        for ip_address in security_event_ips['critical']:
+            city, lat, lon = get_city_and_coords_from_ip(ip_address)
+            if lat is not None and lon is not None:
+                # Count events for this IP
+                event_count = sum(1 for e in critical_events if e.get('ip') == ip_address)
+                event_types = ', '.join(set(e.get('event', 'Unknown') for e in critical_events if e.get('ip') == ip_address))
+                
+                location_key = f"{lat:.1f},{lon:.1f}"
+                jitter = location_counts[location_key] * 0.05
+                location_counts[location_key] += 1
+                
+                jittered_lat = lat + (random.random() - 0.5) * jitter
+                jittered_lon = lon + (random.random() - 0.5) * jitter
+                
+                folium.CircleMarker(
+                    location=[jittered_lat, jittered_lon],
+                    radius=12,
+                    popup=f"<b>{city}</b><br>IP: {ip_address}<br>Critical Events: {event_count}<br>Types: {event_types}",
+                    color='darkred',
+                    fill=True,
+                    fillColor='red',
+                    fillOpacity=0.8,
+                    weight=3
+                ).add_to(m)
+        
+        for ip_address in security_event_ips['high']:
+            city, lat, lon = get_city_and_coords_from_ip(ip_address)
+            if lat is not None and lon is not None:
+                # Count events for this IP
+                event_count = sum(1 for e in high_events if e.get('ip') == ip_address)
+                event_types = ', '.join(set(e.get('event', 'Unknown') for e in high_events if e.get('ip') == ip_address))
+                
+                location_key = f"{lat:.1f},{lon:.1f}"
+                jitter = location_counts[location_key] * 0.05
+                location_counts[location_key] += 1
+                
+                jittered_lat = lat + (random.random() - 0.5) * jitter
+                jittered_lon = lon + (random.random() - 0.5) * jitter
+                
+                folium.CircleMarker(
+                    location=[jittered_lat, jittered_lon],
+                    radius=10,
+                    popup=f"<b>{city}</b><br>IP: {ip_address}<br>High Events: {event_count}<br>Types: {event_types}",
+                    color='darkorange',
+                    fill=True,
+                    fillColor='orange',
+                    fillOpacity=0.8,
+                    weight=3
+                ).add_to(m)
+        
+        for ip_address in security_event_ips['medium']:
+            city, lat, lon = get_city_and_coords_from_ip(ip_address)
+            if lat is not None and lon is not None:
+                # Count events for this IP
+                event_count = sum(1 for e in medium_events if e.get('ip') == ip_address)
+                event_types = ', '.join(set(e.get('event', 'Unknown') for e in medium_events if e.get('ip') == ip_address))
+                
+                location_key = f"{lat:.1f},{lon:.1f}"
+                jitter = location_counts[location_key] * 0.05
+                location_counts[location_key] += 1
+                
+                jittered_lat = lat + (random.random() - 0.5) * jitter
+                jittered_lon = lon + (random.random() - 0.5) * jitter
+                
+                folium.CircleMarker(
+                    location=[jittered_lat, jittered_lon],
+                    radius=8,
+                    popup=f"<b>{city}</b><br>IP: {ip_address}<br>Medium Events: {event_count}<br>Types: {event_types}",
+                    color='gold',
+                    fill=True,
+                    fillColor='yellow',
+                    fillOpacity=0.8,
+                    weight=3
+                ).add_to(m)
+    
+    # Add nginx IPs to map
+    ENABLE_NGINX_MARKERS = True
+    
+    if ENABLE_NGINX_MARKERS:
+        # Add nginx IPs to map (add directly to map, not in FeatureGroup, so they're always visible)
+        nginx_count = 0
+        for ip_address in nginx_access.keys():
+            city, lat, lon = get_city_and_coords_from_ip(ip_address)
+            if lat is not None and lon is not None:
+                total_requests = sum(nginx_access[ip_address].values())
+                status_info = ', '.join([f"{status}({count})" for status, count in sorted(nginx_access[ip_address].items(), key=lambda x: int(x[0]))[:5]])
+                
+                location_key = f"{lat:.1f},{lon:.1f}"
+                jitter = location_counts[location_key] * 0.05
+                location_counts[location_key] += 1
+                
+                jittered_lat = lat + (random.random() - 0.5) * jitter
+                jittered_lon = lon + (random.random() - 0.5) * jitter
+                
+                # Color based on request count
+                if total_requests > 1000:
+                    color = 'darkblue'
+                    radius = 10
+                elif total_requests > 100:
+                    color = 'blue'
+                    radius = 8
+                elif total_requests > 10:
+                    color = 'lightblue'
+                    radius = 6
+                else:
+                    color = 'cyan'
+                    radius = 4
+                
+                folium.CircleMarker(
+                    location=[jittered_lat, jittered_lon],
+                    radius=radius,
+                    popup=f"<b>{city}</b><br>IP: {ip_address}<br>Nginx Requests: {total_requests}<br>Status Codes: {status_info}",
+                    color=color,
+                    fill=True,
+                    fillColor=color,
+                    fillOpacity=0.7,
+                    weight=2
+                ).add_to(m)
+                nginx_count += 1
+        
+        if debug:
+            print(f"Added {nginx_count} nginx IP markers to map (out of {len(nginx_access)} total nginx IPs)")
+    
     m.save(HACKER_MAP)  # Save the map to an HTML file
+    
+    # Add legend to map - set to False to disable
+    ENABLE_LEGEND = False
+    
+    if ENABLE_LEGEND:
+        # Add custom legend by injecting HTML into the saved map file using a safer method
+        try:
+            with open(HACKER_MAP, 'r', encoding='utf-8') as f:
+                map_content = f.read()
+            
+            # Legend HTML to inject
+            legend_html = '''
+    <div id="map-legend" style="position: fixed; 
+                bottom: 50px; right: 10px; width: 130px; height: auto; 
+                background-color: white; z-index:9999; font-size:10px;
+                border:1px solid grey; border-radius: 3px; padding: 4px 6px;
+                font-family: Arial, sans-serif; box-shadow: 0 0 10px rgba(0,0,0,0.2);">
+    <h4 style="margin-top:0; margin-bottom:3px; font-size:11px; font-weight:bold;">Map Legend</h4>
+    <p style="margin:1px 0; line-height:1.2;"><span style="color:red; font-size:12px;">●</span> Critical Events</p>
+    <p style="margin:1px 0; line-height:1.2;"><span style="color:orange; font-size:12px;">●</span> High Events</p>
+    <p style="margin:1px 0; line-height:1.2;"><span style="color:yellow; font-size:12px;">●</span> Medium Events</p>
+    <p style="margin:1px 0; line-height:1.2;"><span style="color:blue; font-size:12px;">●</span> Nginx IPs</p>
+    <p style="margin:1px 0; line-height:1.2;"><span style="color:#ff0000; font-size:12px;">●</span> SSH Attempts</p>
+    <p style="margin:1px 0; line-height:1.2;"><span style="color:#9400d3; font-size:12px;">●</span> UFW Blocks</p>
+    </div>
+'''
+            
+            # Find where to inject - look for the map div and inject legend right after it
+            pattern = r'(<div class="folium-map"[^>]*></div>)'
+            if re.search(pattern, map_content):
+                # Insert legend after the map div, before any following content
+                map_content = re.sub(pattern, r'\1' + legend_html, map_content, count=1)
+            elif '</body>' in map_content:
+                # Fallback: inject before closing body tag
+                map_content = map_content.replace('</body>', legend_html + '\n</body>')
+            elif '</html>' in map_content:
+                map_content = map_content.replace('</html>', legend_html + '\n</html>')
+            
+            with open(HACKER_MAP, 'w', encoding='utf-8') as f:
+                f.write(map_content)
+        except Exception as e:
+            # If legend injection fails, log but don't break the map
+            journal.send(MESSAGE=f"Failed to add legend to map: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+            if debug:
+                print(f"Warning: Could not add legend to map: {e}")
     journal.send(MESSAGE=f"Map template {ROOT}/{HACKER_TEMPLATE} saved to {HACKER_MAP}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
 
     country_attempts = sorted(country_attempts.items(), key=lambda x: x[1], reverse=True)
     user_attempts = sorted(user_attempts.items(), key=lambda x: x[0])
     report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Extract security events from all sources
-    critical_events, high_events, medium_events, successful_logins = extract_security_events(
-        ssh_attempts, nginx_access, nginx_errors, from_date, to_date, debug
-    )
     
     # Add country information to successful logins
     successful_country_attempts = defaultdict(int)
@@ -1004,17 +1222,53 @@ def main():
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for more verbose output")
     parser.add_argument("--no-email", action="store_true", help="Skip sending email (generate report only)")
+    parser.add_argument(
+        "--tiles",
+        required=False,
+        type=str,
+        default=None,
+        help="Base map tiles (e.g., 'CartoDB positron', 'OpenStreetMap', 'CartoDB dark_matter'). Overrides config.",
+    )
 
     args = parser.parse_args()
     
+    # Normalize date arguments to full timestamps for consistent processing
+    def normalize_dt(val, is_start=True):
+        if isinstance(val, str):
+            # Accept date-only 'YYYY-MM-DD' or full 'YYYY-MM-DD HH:MM:SS'
+            try:
+                dt = datetime.strptime(val, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                try:
+                    d = datetime.strptime(val, '%Y-%m-%d').date()
+                    if is_start:
+                        dt = datetime.combine(d, datetime.min.time())
+                    else:
+                        dt = datetime.combine(d, datetime.max.time())
+                except ValueError:
+                    # Fallback: treat as 'today'
+                    d = datetime.now().date()
+                    dt = datetime.combine(d, datetime.min.time() if is_start else datetime.max.time())
+        else:
+            # date object
+            d = val
+            if hasattr(val, 'year') and not hasattr(val, 'hour'):
+                dt = datetime.combine(d, datetime.min.time() if is_start else datetime.max.time())
+            else:
+                dt = val
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+    norm_from = normalize_dt(args.from_date, True)
+    norm_to = normalize_dt(args.to_date, False)
+
     # Extract SSH authentication failures, UFW firewall blocks, and nginx access logs
-    attack_attempts, TOTAL_ATTEMPTS = extract_attack_attempts(args.from_date, args.to_date,debug=args.debug)
-    ufw_blocks, TOTAL_UFW_BLOCKS = extract_ufw_blocks(args.from_date, args.to_date,debug=args.debug)
-    nginx_access, nginx_errors, TOTAL_NGINX_REQUESTS = extract_nginx_logs(args.from_date, args.to_date,debug=args.debug)
+    attack_attempts, TOTAL_ATTEMPTS = extract_attack_attempts(norm_from, norm_to,debug=args.debug)
+    ufw_blocks, TOTAL_UFW_BLOCKS = extract_ufw_blocks(norm_from, norm_to,debug=args.debug)
+    nginx_access, nginx_errors, TOTAL_NGINX_REQUESTS = extract_nginx_logs(norm_from, norm_to,debug=args.debug)
     
     stats = generate_html_report(attack_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS,
                                  nginx_access, TOTAL_NGINX_REQUESTS, nginx_errors,
-                                 args.from_date, args.to_date,debug=args.debug)
+                                 norm_from, norm_to,debug=args.debug, tiles_override=args.tiles)
 
     # Email the report link with summary statistics (unless --no-email flag is set)
     if not args.no_email:
@@ -1041,8 +1295,8 @@ def main():
                 stats['critical_count'],
                 stats['high_count'],
                 stats['medium_count'],
-                args.from_date,
-                args.to_date,
+                norm_from,
+                norm_to,
                 debug=args.debug
             )
         except Exception as e:

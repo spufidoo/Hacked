@@ -675,6 +675,7 @@
     <div class="alert-box info">
         <p>Comprehensive security monitoring from multiple sources: <strong>auditd</strong>, <strong>SSH</strong>, <strong>nginx</strong>, <strong>rkhunter</strong>, <strong>AIDE</strong>, <strong>ClamAV</strong>, <strong>chkrootkit</strong>, <strong>Lynis</strong>, <strong>Tiger</strong>, and <strong>psad</strong>.</p>
         <p>Events are categorized by severity: 🔴 Critical ({{ severity_critical|length }}), ⚠️ High ({{ severity_high|length }}), ℹ️ Medium ({{ severity_medium|length }})</p>
+        <p style="margin-top:10px;color:#00d9ff">Examples: <em>Critical</em> = successful logins, detected malware/rootkits; <em>High</em> = brute force, forbidden access, server errors; <em>Medium</em> = scanning activity (e.g. many 404s), informational audit findings.</p>
     </div>
     
     {% if severity_critical|length > 0 %}
@@ -737,9 +738,10 @@
     <button class="collapsible" disabled style="opacity: 0.5; cursor: not-allowed;">⚠️ High Severity Events (0)</button>
     {% endif %}
     
-    {% if severity_medium|length > 0 %}
+    <a id="medium-events"></a>
     <button class="collapsible">ℹ️ Medium Severity Events ({{ severity_medium|length }})</button>
     <div class="content">
+        {% if severity_medium|length > 0 %}
         <div class="table-wrapper">
             <table>
                 <tr>
@@ -762,17 +764,25 @@
                 {% endfor %}
             </table>
         </div>
+        {% else %}
+        <div class="alert-box info">
+            <h3>ℹ️ No Medium Severity Events</h3>
+            <p>No scanning/informational events detected in this period.</p>
+        </div>
+        {% endif %}
     </div>
-    {% else %}
-    <button class="collapsible" disabled style="opacity: 0.5; cursor: not-allowed;">ℹ️ Medium Severity Events (0)</button>
-    {% endif %}
 
     <h2>🗺️ Map of Attack Attempts</h2>
     <div class="alert-box info">
         <p><strong>Map Legend:</strong></p>
+        <p><span style="color: red;">🔴 Red circles:</span> Critical Security Events (IP addresses involved in critical security incidents)</p>
+        <p><span style="color: orange;">🟠 Orange circles:</span> High Security Events (IP addresses involved in high severity security incidents)</p>
+        <p><span style="color: yellow;">🟡 Yellow circles:</span> Medium Security Events (IP addresses involved in medium severity security incidents)</p>
+        <p><span style="color: blue;">🔵 Blue/Cyan circles:</span> Nginx Access IPs (IP addresses accessing the web server, size indicates request volume)</p>
         <p><span style="color: #ff0000;">🔴 Red/Orange/Yellow/Green circles:</span> SSH attack attempts (size indicates severity)</p>
         <p><span style="color: #9400d3;">🟣 Dark Purple/Purple/Medium Purple/Plum circles:</span> UFW firewall blocks (size indicates block count)</p>
         <p>Click on markers to see detailed information including IP addresses, attempt counts, and targeted ports.</p>
+        <p><em>Note: A legend is also displayed on the map itself in the bottom-right corner.</em></p>
     </div>
     <iframe src="HackedSSH_Map.html" width="100%" height="600"></iframe>
 
@@ -798,6 +808,24 @@
             document.querySelectorAll(".collapsible").forEach(button => {
                 button.nextElementSibling.style.display = "none";
             });
+            // Auto-expand if hash points to a known section
+            const hash = window.location.hash;
+            if (hash) {
+                const target = document.querySelector(hash);
+                if (target) {
+                    // Find the nearest following collapsible to open
+                    let btn = target.tagName.toLowerCase() === 'button' ? target : target.nextElementSibling;
+                    // If anchor used, the next element should be the button
+                    if (target.tagName.toLowerCase() === 'a') {
+                        btn = target.nextElementSibling;
+                    }
+                    if (btn && btn.classList.contains('collapsible')) {
+                        btn.classList.add('active');
+                        const content = btn.nextElementSibling;
+                        if (content) content.style.display = "block";
+                    }
+                }
+            }
         };
     </script>
     </div>
