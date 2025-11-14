@@ -28,9 +28,20 @@ A comprehensive security monitoring and reporting system that tracks failed and 
 ### Reporting & Alerts
 - 📊 **Beautiful HTML Reports** with collapsible sections
 - 📧 **Email Notifications** with severity indicators
-- 🗺️ **Interactive Maps** showing attack origins
+- 🗺️ **Interactive Maps** showing attack origins with:
+  - Security event markers (Critical/High/Medium severity)
+  - Nginx access IP markers
+  - Configurable map legend
+  - Multiple map tile options
 - 📈 **Statistics Dashboard** - Countries, cities, users, IPs
 - 🚨 **Critical Event Highlighting** - Immediate attention to successful logins
+
+### Advanced Geolocation
+- 🌍 **Dual Geolocation Methods**:
+  - **API Method** (ip-api.com): Fast, accurate, always up-to-date with batch processing (100 IPs/request)
+  - **Database Method** (GeoLite2): Local, offline-capable with automatic download support
+- 🔄 **Automatic Database Updates**: Downloads GeoLite2 databases from MaxMind when missing
+- 💾 **Smart Caching**: API responses cached locally to minimize requests and respect rate limits
 
 ## 🚀 Quick Start
 
@@ -38,7 +49,7 @@ A comprehensive security monitoring and reporting system that tracks failed and 
 
 1. **Clone the repository:**
 ```bash
-cd /home/marcus/Code/python
+cd /home/<your-user-id>/Code/python
 git clone <your-repo-url> Hacked
 cd Hacked
 ```
@@ -48,11 +59,23 @@ cd Hacked
 sudo pip3 install folium geoip2 jinja2 systemd-python configparser
 ```
 
-3. **Configure email settings:**
+3. **Configure settings:**
 ```bash
+# Copy template to standard location (or current directory for development)
+sudo cp config.ini.template /usr/local/etc/HackedSSH.ini
+# Or for development:
 cp config.ini.template HackedSSH.ini
+
+# Edit configuration
+sudo nano /usr/local/etc/HackedSSH.ini
+# Or for development:
 nano HackedSSH.ini
-# Edit sender_email, recipient_email, and URLs
+
+# Configure:
+# - Email settings (sender_email, recipient_email)
+# - Web URLs (report_url, local_url)
+# - Map settings (tiles, markers, geolocation method)
+# - MaxMind credentials (if using database method)
 ```
 
 4. **Run manually:**
@@ -249,6 +272,12 @@ The HTML report includes:
 ## 🔧 Configuration Files
 
 ### HackedSSH.ini
+
+Configuration file location (checked in priority order):
+1. `/usr/local/etc/HackedSSH.ini` (standard system location)
+2. `/usr/local/bin/HackedSSH.ini` (backward compatibility)
+3. `./HackedSSH.ini` (current directory, for development)
+
 ```ini
 [EMAIL]
 sender_email = odin@davage.me
@@ -258,6 +287,23 @@ recipient_email = marcus@davage.me
 hostname = home.davage.me
 report_url = http://home.davage.me/HackedSSH_Report.html
 local_url = http://odin.local/HackedSSH_Report.html
+
+[MAP]
+# Base map tiles (OpenStreetMap, CartoDB positron, CartoDB dark_matter, Stamen Terrain)
+tiles = CartoDB positron
+
+# Enable/disable map features
+enable_security_event_markers = True
+enable_nginx_markers = True
+enable_legend = False
+
+# Geolocation method: 'api' (ip-api.com - faster, more accurate) or 'database' (GeoLite2 - local)
+geolocation_method = api
+
+# MaxMind credentials (required for automatic GeoLite2 database download)
+# Get free account at: https://www.maxmind.com/en/geolite2/signup
+# maxmind_account_id = YOUR_ACCOUNT_ID_HERE
+# maxmind_license_key = YOUR_LICENSE_KEY_HERE
 ```
 
 ## 📁 Project Structure
@@ -266,12 +312,14 @@ local_url = http://odin.local/HackedSSH_Report.html
 Hacked/
 ├── HackedSSH.py              # Main monitoring script
 ├── HackedSSH.html            # HTML report template
-├── HackedSSH.ini             # Configuration file
+├── config.ini.template        # Configuration template
+├── HackedSSH.ini             # Configuration file (not in git, contains secrets)
 ├── HackedSSH.js              # Express server (optional)
 ├── HackedSSH.sh              # Shell wrapper
 ├── countries.py              # Country code mappings
-├── GeoLite2-City.mmdb        # GeoIP database
-├── GeoLite2-Country.mmdb     # GeoIP database
+├── .geo_cache.json           # API geolocation cache (auto-generated)
+├── GeoLite2-City.mmdb        # GeoIP database (auto-downloaded if missing)
+└── GeoLite2-Country.mmdb     # GeoIP database (auto-downloaded if missing)
 ├── config_examples/          # Security configuration examples
 │   ├── sshd_config.hardened  # Hardened SSH config
 │   ├── sshd_banner           # SSH login banner
@@ -360,13 +408,51 @@ sudo systemctl daemon-reload
 sudo systemctl restart hackedssh.timer
 ```
 
-## 🔄 Updating GeoIP Databases
+## 🔄 Geolocation Configuration
 
-GeoIP databases need periodic updates:
+### Choosing a Geolocation Method
+
+**API Method (Recommended)** - `geolocation_method = api`
+- ✅ Fast batch processing (100 IPs per request)
+- ✅ Always up-to-date data
+- ✅ More accurate location data
+- ✅ Automatic caching to minimize API calls
+- ⚠️ Requires internet connection
+- ⚠️ Rate limit: 45 requests/minute (handled automatically)
+
+**Database Method** - `geolocation_method = database`
+- ✅ Works offline
+- ✅ No rate limits
+- ⚠️ Requires local database files
+- ⚠️ May be outdated (databases updated weekly by MaxMind)
+
+### Automatic GeoLite2 Database Download
+
+If using the database method, HackedSSH can automatically download GeoLite2 databases when missing:
+
+1. **Get a free MaxMind account:**
+   - Sign up at https://www.maxmind.com/en/geolite2/signup
+   - Find your Account ID and License Key in your account portal
+
+2. **Add credentials to config:**
+   ```ini
+   [MAP]
+   maxmind_account_id = YOUR_ACCOUNT_ID_HERE
+   maxmind_license_key = YOUR_LICENSE_KEY_HERE
+   ```
+
+3. **Automatic download:**
+   - Databases are downloaded to `/usr/local/etc/` (or `/usr/local/bin/` if that doesn't exist)
+   - Compatible with MaxMind's current R2 presigned URL system
+   - Uses Basic Authentication (AccountID + LicenseKey)
+   - Follows official documentation: https://dev.maxmind.com/geoip/updating-databases/
+
+### Manual Database Updates
+
+If you prefer manual updates:
 ```bash
-# Download new databases from MaxMind
-# (Requires free account at maxmind.com)
-wget https://download.maxmind.com/app/geoip_download?...
+# Download from MaxMind account portal using permalinks
+# Place in /usr/local/etc/ or /usr/local/bin/
 ```
 
 ## 📈 Future Enhancements
