@@ -7,6 +7,13 @@ import subprocess
 import configparser
 import getpass
 import random
+import json
+import time
+import urllib.request
+import urllib.error
+import tarfile
+import tempfile
+import base64
 from jinja2 import Environment, FileSystemLoader
 from systemd import journal
 from datetime import datetime, timedelta
@@ -15,8 +22,21 @@ from collections import defaultdict
 from geoip2.database import Reader
 
 # Global Variables
-# Check if we're running in a system-wide installation
-if os.path.exists('/usr/local/bin/HackedSSH.ini'):
+# Check for config file in standard locations (in priority order)
+# 1. /usr/local/etc/ (standard for locally installed software)
+# 2. /usr/local/bin/ (backward compatibility)
+# 3. Current directory (development)
+CONFIG_ROOT = None
+if os.path.exists('/usr/local/etc/HackedSSH.ini'):
+    CONFIG_ROOT = '/usr/local/etc'
+elif os.path.exists('/usr/local/bin/HackedSSH.ini'):
+    CONFIG_ROOT = '/usr/local/bin'
+else:
+    CONFIG_ROOT = '.'
+
+# ROOT is used for templates and data files (keep in /usr/local/bin or current dir)
+# Check for data files in standard locations
+if os.path.exists('/usr/local/bin/HackedSSH.html'):
     ROOT = '/usr/local/bin'
 else:
     ROOT = '.'
@@ -24,7 +44,7 @@ else:
 IP_REGEX = r"(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9a-fA-F:]+)"
 
 config = configparser.ConfigParser()
-config.read(f'{ROOT}/HackedSSH.ini')
+config.read(f'{CONFIG_ROOT}/HackedSSH.ini')
 sender_email = config['EMAIL']['sender_email']
 recipient_email = config['EMAIL']['recipient_email']
 hostname = config['WEB']['hostname']
@@ -32,14 +52,47 @@ report_url = config['WEB']['report_url']
 local_url = config['WEB']['local_url']
 # Optional map tiles configuration; defaults to CartoDB Positron (English labels)
 tiles_default = (config.get('MAP', 'tiles', fallback='CartoDB positron')).strip()
+# Map feature flags from config
+ENABLE_SECURITY_EVENT_MARKERS = config.getboolean('MAP', 'enable_security_event_markers', fallback=True)
+ENABLE_NGINX_MARKERS = config.getboolean('MAP', 'enable_nginx_markers', fallback=True)
+ENABLE_LEGEND = config.getboolean('MAP', 'enable_legend', fallback=False)
+# Geolocation method: 'api' (ip-api.com) or 'database' (GeoLite2)
+GEOLOCATION_METHOD = config.get('MAP', 'geolocation_method', fallback='database').strip().lower()
+# Cache for API lookups (to avoid rate limits)
+geo_cache = {}
+geo_cache_file = f"{ROOT}/.geo_cache.json"
 
 TOTAL_ATTEMPTS   = 0
 HACKER_REPORT    = "/var/www/html/HackedSSH_Report.html"
 HACKER_MAP       = "/var/www/html/HackedSSH_Map.html"
 HACKER_TEMPLATE  = "HackedSSH.html"
-# Path to the GeoLite2 database files
-GEO_CITY_PATH    = f"{ROOT}/GeoLite2-City.mmdb"
-GEO_COUNTRY_PATH = f"{ROOT}/GeoLite2-Country.mmdb"
+
+# Find GeoLite2 database files (check multiple locations like config file)
+def find_geo_database(filename):
+    """Find GeoLite2 database file in standard locations"""
+    search_paths = [
+        '/usr/local/etc',  # Primary location (matches config)
+        '/usr/local/bin',  # Backward compatibility
+        '.'                # Current directory (development)
+    ]
+    for path in search_paths:
+        db_path = f"{path}/{filename}"
+        if os.path.exists(db_path):
+            return db_path
+    return None
+
+# Get GeoLite2 database paths
+GEO_CITY_PATH = find_geo_database('GeoLite2-City.mmdb')
+GEO_COUNTRY_PATH = find_geo_database('GeoLite2-Country.mmdb')
+
+# Determine where to store databases (same priority as config)
+GEO_DB_ROOT = None
+if os.path.exists('/usr/local/etc'):
+    GEO_DB_ROOT = '/usr/local/etc'
+elif os.path.exists('/usr/local/bin'):
+    GEO_DB_ROOT = '/usr/local/bin'
+else:
+    GEO_DB_ROOT = '.'
 
 # Function to extract various attack attempts from the journal
 def extract_attack_attempts(from_date, to_date,debug=False):
@@ -512,8 +565,201 @@ def extract_security_events(ssh_attempts, nginx_access, nginx_errors, from_date,
     
     return critical_events, high_events, medium_events, successful_logins
 
+# Download GeoLite2 database if missing
+def download_geolite2_database(db_type='City'):
+    """Download GeoLite2 database from MaxMind (requires free account, account ID and license key)
+    
+    Compatible with MaxMind's current download system as documented at:
+    https://dev.maxmind.com/geoip/updating-databases/
+    """
+    # MaxMind requires both AccountID and LicenseKey for Basic Authentication
+    # Users need to sign up at https://www.maxmind.com/en/geolite2/signup
+    account_id = config.get('MAP', 'maxmind_account_id', fallback='').strip()
+    license_key = config.get('MAP', 'maxmind_license_key', fallback='').strip()
+    
+    if not account_id or not license_key:
+        journal.send(MESSAGE="GeoLite2 database missing and MaxMind credentials not configured. "
+                    "Sign up at https://www.maxmind.com/en/geolite2/signup and add both "
+                    "maxmind_account_id and maxmind_license_key to your config file.",
+                    SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+        return False
+    
+    try:
+        # Use MaxMind's permalink format with Basic Authentication
+        # MaxMind uses R2 presigned URLs that redirect - urllib handles redirects automatically
+        if db_type == 'City':
+            # GeoLite2-City permalink format
+            url = f"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key={license_key}&suffix=tar.gz"
+            filename = 'GeoLite2-City.mmdb'
+        else:  # Country
+            url = f"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key={license_key}&suffix=tar.gz"
+            filename = 'GeoLite2-Country.mmdb'
+        
+        journal.send(MESSAGE=f"Downloading GeoLite2-{db_type} database from MaxMind...", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+        
+        # Create Basic Auth header (MaxMind requires AccountID:LicenseKey)
+        credentials = f"{account_id}:{license_key}".encode('utf-8')
+        auth_header = base64.b64encode(credentials).decode('utf-8')
+        
+        # Download the tar.gz file with Basic Authentication
+        # MaxMind redirects to R2 storage - urllib.request.urlopen handles redirects automatically
+        req = urllib.request.Request(url)
+        req.add_header('Authorization', f'Basic {auth_header}')
+        req.add_header('User-Agent', 'HackedSSH/1.0')
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.tar.gz') as tmp_file:
+            tmp_path = tmp_file.name
+            with urllib.request.urlopen(req, timeout=60) as response:
+                # Follow redirects (MaxMind uses R2 presigned URLs)
+                tmp_file.write(response.read())
+        
+        # Extract the .mmdb file from the tar.gz
+        target_path = f"{GEO_DB_ROOT}/{filename}"
+        with tarfile.open(tmp_path, 'r:gz') as tar:
+            # Find the .mmdb file in the archive
+            for member in tar.getmembers():
+                if member.name.endswith('.mmdb'):
+                    # Extract to temporary location first
+                    extracted_member = tar.extractfile(member)
+                    if extracted_member:
+                        # Write directly to target path
+                        with open(target_path, 'wb') as out_file:
+                            out_file.write(extracted_member.read())
+                        os.chmod(target_path, 0o644)
+                        journal.send(MESSAGE=f"GeoLite2-{db_type} database downloaded to {target_path}",
+                                    SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+                        os.unlink(tmp_path)
+                        return True
+        
+        os.unlink(tmp_path)
+        journal.send(MESSAGE=f"Could not find .mmdb file in GeoLite2-{db_type} archive",
+                    SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+        return False
+        
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            journal.send(MESSAGE="Invalid MaxMind credentials (401 Unauthorized). Please check your account_id and license_key in the config file.",
+                        SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        elif e.code == 403:
+            journal.send(MESSAGE="MaxMind access forbidden (403). Your account may not have access to GeoLite2 databases or your subscription may have expired.",
+                        SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        else:
+            journal.send(MESSAGE=f"Failed to download GeoLite2-{db_type}: HTTP {e.code} - {e.reason}",
+                        SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        return False
+    except urllib.error.URLError as e:
+        journal.send(MESSAGE=f"Network error downloading GeoLite2-{db_type}: {e.reason}. Check firewall/proxy settings for access to mm-prod-geoip-databases.a2649acb697e2c09b632799562c076f2.r2.cloudflarestorage.com",
+                    SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        return False
+    except Exception as e:
+        journal.send(MESSAGE=f"Error downloading GeoLite2-{db_type}: {e}",
+                    SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
+        return False
+
+# Check and download GeoLite2 databases if missing (when using database method)
+if GEOLOCATION_METHOD == 'database':
+    if not GEO_CITY_PATH:
+        if download_geolite2_database('City'):
+            GEO_CITY_PATH = find_geo_database('GeoLite2-City.mmdb')
+    if not GEO_COUNTRY_PATH:
+        if download_geolite2_database('Country'):
+            GEO_COUNTRY_PATH = find_geo_database('GeoLite2-Country.mmdb')
+
+# Load geo cache from file
+def load_geo_cache():
+    global geo_cache
+    try:
+        if os.path.exists(geo_cache_file):
+            with open(geo_cache_file, 'r') as f:
+                geo_cache = json.load(f)
+    except Exception:
+        geo_cache = {}
+
+# Save geo cache to file
+def save_geo_cache():
+    try:
+        with open(geo_cache_file, 'w') as f:
+            json.dump(geo_cache, f)
+    except Exception:
+        pass
+
+# Batch lookup IPs using ip-api.com batch API (up to 100 IPs per request)
+def batch_lookup_ips(ip_list):
+    """Batch lookup multiple IPs using ip-api.com batch API (15 requests/minute, up to 100 IPs per request)"""
+    if not ip_list:
+        return
+    
+    # Filter out local IPs and already cached IPs
+    ips_to_lookup = []
+    for ip in ip_list:
+        if not ip.startswith(('127.', '192.168.', '10.', '172.')) and ip != 'localhost':
+            # Check if not in cache or cache expired
+            if ip not in geo_cache or (time.time() - geo_cache[ip].get('timestamp', 0) >= 2592000):
+                ips_to_lookup.append(ip)
+    
+    if not ips_to_lookup:
+        return
+    
+    # Batch into groups of 100 (API limit)
+    for i in range(0, len(ips_to_lookup), 100):
+        batch = ips_to_lookup[i:i+100]
+        try:
+            # Use batch API endpoint
+            url = "http://ip-api.com/batch?fields=status,countryCode,city,lat,lon"
+            data = json.dumps(batch).encode('utf-8')
+            req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                results = json.loads(response.read().decode())
+                # Process results
+                for idx, result in enumerate(results):
+                    if idx < len(batch):
+                        ip = batch[idx]
+                        if result.get('status') == 'success':
+                            geo_cache[ip] = {
+                                'country': result.get('countryCode', 'Unknown'),
+                                'city': result.get('city', 'Unknown'),
+                                'lat': result.get('lat'),
+                                'lon': result.get('lon'),
+                                'timestamp': time.time()
+                            }
+        except Exception as e:
+            # If batch fails, continue with remaining IPs
+            journal.send(MESSAGE=f"Batch geolocation lookup failed: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+            continue
+        
+        # Rate limiting: batch API allows 15 requests/minute, so wait 4 seconds between batches
+        if i + 100 < len(ips_to_lookup):
+            time.sleep(4)
+
+# Get geolocation from API cache (after batch lookup)
+def get_geo_from_api(ip_address):
+    """Get geolocation from cache (populated by batch_lookup_ips)"""
+    # Skip local/private IPs
+    if ip_address.startswith(('127.', '192.168.', '10.', '172.')) or ip_address == 'localhost':
+        return None, None, None, None
+    
+    # Check cache
+    if ip_address in geo_cache:
+        cached_data = geo_cache[ip_address]
+        # Cache valid for 30 days
+        if time.time() - cached_data.get('timestamp', 0) < 2592000:
+            return cached_data.get('country'), cached_data.get('city'), cached_data.get('lat'), cached_data.get('lon')
+    
+    return None, None, None, None
+
 # Function to get country from IP address
 def get_country_from_ip(ip_address):
+    if GEOLOCATION_METHOD == 'api':
+        country, _, _, _ = get_geo_from_api(ip_address)
+        if country:
+            return country
+        # Fall back to database if API fails
+    
+    # Use GeoLite2 database
+    if not GEO_COUNTRY_PATH:
+        return "Unknown"
+    
     try:
         reader = Reader(GEO_COUNTRY_PATH)
         response = reader.country(ip_address)
@@ -528,6 +774,16 @@ def get_country_from_ip(ip_address):
 
 # Function to get city and coordinates from IP address
 def get_city_and_coords_from_ip(ip_address):
+    if GEOLOCATION_METHOD == 'api':
+        _, city, lat, lon = get_geo_from_api(ip_address)
+        if city and lat and lon:
+            return city, lat, lon
+        # Fall back to database if API fails
+    
+    # Use GeoLite2 database
+    if not GEO_CITY_PATH:
+        return "Unknown", None, None
+    
     try:
         reader = Reader(GEO_CITY_PATH)
         response = reader.city(ip_address)
@@ -544,6 +800,16 @@ def get_city_and_coords_from_ip(ip_address):
 
 # Function to get city from IP address
 def get_city_from_ip(ip_address):
+    if GEOLOCATION_METHOD == 'api':
+        _, city, _, _ = get_geo_from_api(ip_address)
+        if city:
+            return city
+        # Fall back to database if API fails
+    
+    # Use GeoLite2 database
+    if not GEO_CITY_PATH:
+        return "Unknown"
+    
     try:
         reader = Reader(GEO_CITY_PATH)
         response = reader.city(ip_address)
@@ -603,6 +869,22 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
     for event in medium_events:
         if event.get('ip') and event['ip'] != 'localhost':
             security_event_ips['medium'].add(event['ip'])
+    
+    # Collect all unique IPs that need geolocation for batch lookup
+    if GEOLOCATION_METHOD == 'api':
+        all_ips = set()
+        all_ips.update(ssh_attempts.keys())
+        all_ips.update(ufw_blocks.keys())
+        all_ips.update(nginx_access.keys())
+        all_ips.update(security_event_ips['critical'])
+        all_ips.update(security_event_ips['high'])
+        all_ips.update(security_event_ips['medium'])
+        # Perform batch lookup for all IPs at once
+        if debug:
+            print(f"Batch looking up {len(all_ips)} unique IPs...")
+        batch_lookup_ips(list(all_ips))
+        if debug:
+            print(f"Batch lookup complete. Cache now has {len(geo_cache)} entries.")
     
     country_attempts = defaultdict(int)
     user_attempts = defaultdict(int)
@@ -747,8 +1029,6 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                 ).add_to(m)
     
     # Add security event IPs to map (Critical/High/Medium)
-    ENABLE_SECURITY_EVENT_MARKERS = True
-    
     if ENABLE_SECURITY_EVENT_MARKERS:
         # Add security event IPs directly to map (not using FeatureGroups to avoid breaking the map)
         for ip_address in security_event_ips['critical']:
@@ -827,8 +1107,6 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                 ).add_to(m)
     
     # Add nginx IPs to map
-    ENABLE_NGINX_MARKERS = True
-    
     if ENABLE_NGINX_MARKERS:
         # Add nginx IPs to map (add directly to map, not in FeatureGroup, so they're always visible)
         nginx_count = 0
@@ -876,9 +1154,7 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
     
     m.save(HACKER_MAP)  # Save the map to an HTML file
     
-    # Add legend to map - set to False to disable
-    ENABLE_LEGEND = False
-    
+    # Add legend to map
     if ENABLE_LEGEND:
         # Add custom legend by injecting HTML into the saved map file using a safer method
         try:
@@ -1190,6 +1466,10 @@ User IDs Targeted: {user_count}
 
 # Main function
 def main():
+    # Load geo cache if using API method
+    if GEOLOCATION_METHOD == 'api':
+        load_geo_cache()
+    
     try:
         user = getpass.getuser()
     except:
@@ -1305,6 +1585,10 @@ def main():
         journal.send(MESSAGE="Email skipped (--no-email flag set). Report available at: " + report_url, SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
 
     journal.send(MESSAGE="Report successfully generated and saved.", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    
+    # Save geo cache if using API method
+    if GEOLOCATION_METHOD == 'api':
+        save_geo_cache()
 
 if __name__ == "__main__":
     main()

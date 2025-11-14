@@ -5,3 +5,21 @@ recipient_email = recipient@example.com
 [WEB]
 hostname = your-hostname
 report_url = http://your-web-server/Hacker_Report.html
+
+[MAP]
+# Base map tiles for the report map.
+# Common options: OpenStreetMap, CartoDB positron, CartoDB dark_matter, Stamen Terrain
+tiles = CartoDB positron
+# Enable/disable map features
+enable_security_event_markers = True
+enable_nginx_markers = True
+enable_legend = False
+# Geolocation method: 'api' (ip-api.com - more accurate, always up-to-date) 
+#                  or 'database' (GeoLite2 - local, may be outdated)
+# API method uses caching to minimize requests (45 requests/minute limit)
+geolocation_method = database
+# MaxMind credentials (required for automatic GeoLite2 database download)
+# Get a free account at: https://www.maxmind.com/en/geolite2/signup
+# Find your Account ID and License Key in your MaxMind account portal
+# maxmind_account_id = YOUR_ACCOUNT_ID_HERE
+# maxmind_license_key = YOUR_LICENSE_KEY_HERE
