@@ -9,7 +9,8 @@ report_url = http://your-web-server/Hacker_Report.html
 [MAP]
 # Base map tiles for the report map.
 # Common options: OpenStreetMap, CartoDB positron, CartoDB dark_matter, Stamen Terrain
-tiles = CartoDB positron
+# CartoDB tiles now require an API key (unauthenticated requests show "API KEY REQUIRED").
+tiles = OpenStreetMap
 # Enable/disable map features
 enable_security_event_markers = True
 enable_nginx_markers = True
@@ -23,3 +24,10 @@ geolocation_method = database
 # Find your Account ID and License Key in your MaxMind account portal
 # maxmind_account_id = YOUR_ACCOUNT_ID_HERE
 # maxmind_license_key = YOUR_LICENSE_KEY_HERE
+
+[ARCHIVE]
+archive_dir = /var/www/html/reports
+archive_top_n = 50
+archive_max_days = 730
+archive_events = True
+archive_max_events = 20000

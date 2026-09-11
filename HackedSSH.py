@@ -8,6 +8,7 @@ import configparser
 import getpass
 import random
 import json
+import gzip
 import time
 import urllib.request
 import urllib.error
@@ -22,24 +23,22 @@ from collections import defaultdict
 from geoip2.database import Reader
 
 # Global Variables
-# Check for config file in standard locations (in priority order)
-# 1. /usr/local/etc/ (standard for locally installed software)
-# 2. /usr/local/bin/ (backward compatibility)
-# 3. Current directory (development)
-CONFIG_ROOT = None
-if os.path.exists('/usr/local/etc/HackedSSH.ini'):
-    CONFIG_ROOT = '/usr/local/etc'
-elif os.path.exists('/usr/local/bin/HackedSSH.ini'):
-    CONFIG_ROOT = '/usr/local/bin'
-else:
-    CONFIG_ROOT = '.'
+# Resolve config/data locations. Search order prefers the directory the script
+# lives in and the current working directory (development in Code/python/Hacked)
+# before the installed locations (/usr/local/etc, /usr/local/bin). This means a
+# checkout can be edited and run in-place without picking up an installed copy.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ROOT is used for templates and data files (keep in /usr/local/bin or current dir)
-# Check for data files in standard locations
-if os.path.exists('/usr/local/bin/HackedSSH.html'):
-    ROOT = '/usr/local/bin'
-else:
-    ROOT = '.'
+def _find_root(filename):
+    """Return the first search path that contains filename, else '.'."""
+    for path in (SCRIPT_DIR, '.', '/usr/local/etc', '/usr/local/bin'):
+        if os.path.exists(os.path.join(path, filename)):
+            return path
+    return '.'
+
+# CONFIG_ROOT holds HackedSSH.ini; ROOT holds the Jinja template + data files.
+CONFIG_ROOT = _find_root('HackedSSH.ini')
+ROOT = _find_root('HackedSSH.html')
 
 IP_REGEX = r"(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9a-fA-F:]+)"
 
@@ -50,14 +49,24 @@ recipient_email = config['EMAIL']['recipient_email']
 hostname = config['WEB']['hostname']
 report_url = config['WEB']['report_url']
 local_url = config['WEB']['local_url']
-# Optional map tiles configuration; defaults to CartoDB Positron (English labels)
-tiles_default = (config.get('MAP', 'tiles', fallback='CartoDB positron')).strip()
+# Optional map tiles configuration; defaults to OpenStreetMap.
+# NOTE: CartoDB basemaps now require an API key and render an "API KEY REQUIRED"
+# watermark when used unauthenticated, so OpenStreetMap is the safe default.
+tiles_default = (config.get('MAP', 'tiles', fallback='OpenStreetMap')).strip()
 # Map feature flags from config
 ENABLE_SECURITY_EVENT_MARKERS = config.getboolean('MAP', 'enable_security_event_markers', fallback=True)
 ENABLE_NGINX_MARKERS = config.getboolean('MAP', 'enable_nginx_markers', fallback=True)
 ENABLE_LEGEND = config.getboolean('MAP', 'enable_legend', fallback=False)
 # Geolocation method: 'api' (ip-api.com) or 'database' (GeoLite2)
 GEOLOCATION_METHOD = config.get('MAP', 'geolocation_method', fallback='database').strip().lower()
+# Daily JSON archives for date scrolling (gzipped, capped detail)
+ARCHIVE_DIR = config.get('ARCHIVE', 'archive_dir', fallback='/var/www/html/reports').strip()
+ARCHIVE_TOP_N = config.getint('ARCHIVE', 'archive_top_n', fallback=50)
+ARCHIVE_MAX_DAYS = config.getint('ARCHIVE', 'archive_max_days', fallback=730)
+# Per-event archive: stores individual log lines so the report page can filter
+# and group them in the browser. ~30 KB gzipped for a busy day.
+ARCHIVE_EVENTS = config.getboolean('ARCHIVE', 'archive_events', fallback=True)
+ARCHIVE_MAX_EVENTS = config.getint('ARCHIVE', 'archive_max_events', fallback=20000)
 # Cache for API lookups (to avoid rate limits)
 geo_cache = {}
 geo_cache_file = f"{ROOT}/.geo_cache.json"
@@ -71,9 +80,10 @@ HACKER_TEMPLATE  = "HackedSSH.html"
 def find_geo_database(filename):
     """Find GeoLite2 database file in standard locations"""
     search_paths = [
-        '/usr/local/etc',  # Primary location (matches config)
+        SCRIPT_DIR,        # Alongside the script (development checkout)
+        '.',               # Current directory (development)
+        '/usr/local/etc',  # Installed location (matches config)
         '/usr/local/bin',  # Backward compatibility
-        '.'                # Current directory (development)
     ]
     for path in search_paths:
         db_path = f"{path}/{filename}"
@@ -201,52 +211,92 @@ def extract_ufw_blocks(from_date, to_date, debug=False):
     
     return ufw_blocks, TOTAL_UFW_BLOCKS
 
+# Combined-format nginx access line, with optional trailing host=/proxy= fields
+# added by the vhost log_format. Older rotated logs without those fields still match.
+NGINX_ACCESS_RE = re.compile(
+    rf'^({IP_REGEX}) - \S+ \[([^\]]+)\] "([^"]*)" (\d+) (\d+|-)(?: "([^"]*)" "([^"]*)")?(?: host=(\S+))?(?: proxy=(\S*))?'
+)
+
+
+def _parse_nginx_access_line(line):
+    """Return a dict for one access.log line, or None if it is not parseable."""
+    m = NGINX_ACCESS_RE.match(line)
+    if not m:
+        return None
+    ip, ts, request, status, size, referer, agent, host, proxy = m.groups()
+    try:
+        when = datetime.strptime(ts.split()[0], '%d/%b/%Y:%H:%M:%S')
+    except ValueError:
+        return None
+    host = (host or '').strip()
+    if not host or host in ('-', '_'):
+        host = '(unknown)'
+    return {
+        'ip': ip,
+        'when': when,
+        'request': request or '',
+        'status': status,
+        'size': size,
+        'referer': referer,
+        'agent': agent,
+        'host': host,
+        'proxy': proxy or '',
+    }
+
+
+def _finalise_nginx_hosts(raw_hosts):
+    """Turn the per-host collector into a JSON-friendly list sorted by volume."""
+    summary = []
+    for host, data in raw_hosts.items():
+        summary.append({
+            'host': host,
+            'total': data['total'],
+            'ips': len(data['ips']),
+            'statuses': dict(data['statuses']),
+            'proxied': data['proxied'],
+        })
+    summary.sort(key=lambda d: d['total'], reverse=True)
+    return summary
+
+
 # Function to extract nginx access logs
 def extract_nginx_logs(from_date, to_date, debug=False):
     nginx_access = defaultdict(lambda: defaultdict(int))  # {ip: {status: count}}
+    nginx_hosts = defaultdict(lambda: {
+        'total': 0, 'ips': set(), 'statuses': defaultdict(int), 'proxied': False,
+    })
     nginx_errors = []
     TOTAL_NGINX_REQUESTS = 0
-    
+    from_dt, to_dt = _range_bounds(from_date, to_date)
+
     try:
         # Parse nginx access logs (including rotated .1 and .gz)
-        # Format: IP - - [date] "REQUEST" status bytes "referrer" "user-agent"
+        # Format: IP - - [date] "REQUEST" status bytes "referrer" "user-agent" [host=... proxy=...]
         access_log = subprocess.check_output(
             ["bash", "-lc", "zcat -f /var/log/nginx/access.log* 2>/dev/null || cat /var/log/nginx/access.log 2>/dev/null"]
         ).decode("utf-8")
-        
+
         for line in access_log.splitlines():
-            try:
-                # Extract IP, date, status code
-                match = re.match(rf'^({IP_REGEX}) - - \[([^\]]+)\] "([^"]*)" (\d+)', line)
-                if match:
-                    ip_address = match.group(1)
-                    log_date_str = match.group(2)
-                    request = match.group(3)
-                    status = match.group(4)
-                    
-                    # Parse date: 23/Oct/2025:14:42:31 +0100
-                    log_date = datetime.strptime(log_date_str.split()[0], '%d/%b/%Y:%H:%M:%S')
-                    
-                    # Filter by date range - handle both date objects and strings
-                    if isinstance(from_date, str):
-                        from_dt = datetime.strptime(from_date, '%Y-%m-%d %H:%M:%S')
-                    else:
-                        from_dt = datetime.combine(from_date, datetime.min.time())
-                    
-                    if isinstance(to_date, str):
-                        to_dt = datetime.strptime(to_date, '%Y-%m-%d %H:%M:%S')
-                    else:
-                        to_dt = datetime.combine(to_date, datetime.max.time())
-                    
-                    if from_dt <= log_date <= to_dt:
-                        # Skip local IPs
-                        if not ip_address.startswith(('127.', '192.168.', '10.', '172.')):
-                            nginx_access[ip_address][status] += 1
-                            TOTAL_NGINX_REQUESTS += 1
-                            if debug:
-                                print(f"NGINX: {ip_address} - {status} - {request[:50]}")
-            except Exception as e:
-                continue  # Skip malformed lines
+            rec = _parse_nginx_access_line(line)
+            if not rec:
+                continue
+            if not (from_dt <= rec['when'] <= to_dt):
+                continue
+            ip_address = rec['ip']
+            # Skip local IPs
+            if ip_address.startswith(('127.', '192.168.', '10.', '172.')):
+                continue
+            status = rec['status']
+            nginx_access[ip_address][status] += 1
+            TOTAL_NGINX_REQUESTS += 1
+            host_rec = nginx_hosts[rec['host']]
+            host_rec['total'] += 1
+            host_rec['ips'].add(ip_address)
+            host_rec['statuses'][status] += 1
+            if rec['proxy'] and rec['proxy'] not in ('-', ''):
+                host_rec['proxied'] = True
+            if debug:
+                print(f"NGINX: {ip_address} host={rec['host']} {status} {rec['request'][:50]}")
                     
         # Parse nginx error logs (including rotated)
         try:
@@ -289,8 +339,170 @@ def extract_nginx_logs(from_date, to_date, debug=False):
         journal.send(MESSAGE=f"nginx access.log not accessible: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
     except Exception as e:
         journal.send(MESSAGE=f"Error reading nginx logs: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
-    
-    return nginx_access, nginx_errors, TOTAL_NGINX_REQUESTS
+
+    return nginx_access, nginx_errors, TOTAL_NGINX_REQUESTS, _finalise_nginx_hosts(nginx_hosts)
+
+# ---------------------------------------------------------------------------
+# Per-event extraction for the browsable daily log archive.
+#
+# The aggregate extractors above answer "how many"; these answer "which lines".
+# Events are emitted with full ISO timestamps (the report window can span more
+# than one calendar day) and short keys, because the archive is gzipped and
+# these files are fetched by the browser.
+# ---------------------------------------------------------------------------
+
+def _range_bounds(from_date, to_date):
+    """Normalise the report window to a pair of datetimes."""
+    if isinstance(from_date, str):
+        from_dt = datetime.strptime(from_date, '%Y-%m-%d %H:%M:%S')
+    else:
+        from_dt = datetime.combine(from_date, datetime.min.time())
+    if isinstance(to_date, str):
+        to_dt = datetime.strptime(to_date, '%Y-%m-%d %H:%M:%S')
+    else:
+        to_dt = datetime.combine(to_date, datetime.max.time())
+    return from_dt, to_dt
+
+
+def _journal_iso(unit_args, from_date, to_date):
+    """Run journalctl with ISO timestamps so events can be parsed without guessing the year."""
+    cmd = ["journalctl", *unit_args, "-o", "short-iso",
+           f"--since={from_date}", f"--until={to_date}", "--no-pager"]
+    try:
+        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode("utf-8", "replace")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+
+ISO_PREFIX = re.compile(r'^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})')
+
+
+def _iso_parts(line):
+    m = ISO_PREFIX.match(line)
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
+
+
+def extract_nginx_events(from_date, to_date, max_events, debug=False):
+    """Individual nginx requests in range, newest last."""
+    events = []
+    from_dt, to_dt = _range_bounds(from_date, to_date)
+    try:
+        access_log = subprocess.check_output(
+            ["bash", "-lc", "zcat -f /var/log/nginx/access.log* 2>/dev/null || cat /var/log/nginx/access.log 2>/dev/null"]
+        ).decode("utf-8", "replace")
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return events
+
+    for line in access_log.splitlines():
+        rec = _parse_nginx_access_line(line)
+        if not rec:
+            continue
+        if not (from_dt <= rec['when'] <= to_dt):
+            continue
+        parts = rec['request'].split(' ')
+        method = parts[0][:10] if parts and parts[0] else ''
+        url = parts[1][:200] if len(parts) > 1 else rec['request'][:200]
+        events.append({
+            'ts': rec['when'].strftime('%Y-%m-%d %H:%M:%S'),
+            'ip': rec['ip'],
+            'host': rec['host'],
+            'method': method,
+            'url': url,
+            'status': int(rec['status']),
+            'bytes': int(rec['size']) if rec['size'].isdigit() else 0,
+            'ref': (rec['referer'] or '')[:200] if rec['referer'] and rec['referer'] != '-' else '',
+            'ua': (rec['agent'] or '')[:160] if rec['agent'] and rec['agent'] != '-' else '',
+        })
+    if debug:
+        print(f"nginx events collected: {len(events)}")
+    return events[-max_events:] if max_events and len(events) > max_events else events
+
+
+def extract_ufw_events(from_date, to_date, max_events, debug=False):
+    """Individual UFW firewall blocks in range."""
+    events = []
+    logs = _journal_iso(["_TRANSPORT=kernel"], from_date, to_date)
+    pattern = re.compile(r'\[UFW BLOCK\].*?SRC=(\S+).*?DST=(\S+).*?PROTO=(\S+)(?:.*?DPT=(\d+))?')
+    for line in logs.splitlines():
+        if '[UFW BLOCK]' not in line:
+            continue
+        day, clock = _iso_parts(line)
+        if not day:
+            continue
+        m = pattern.search(line)
+        if not m:
+            continue
+        src, _dst, proto, dpt = m.groups()
+        events.append({
+            'ts': f'{day} {clock}',
+            'ip': src,
+            'port': int(dpt) if dpt else 0,
+            'proto': proto,
+        })
+    if debug:
+        print(f"ufw events collected: {len(events)}")
+    return events[-max_events:] if max_events and len(events) > max_events else events
+
+
+def extract_ssh_events(from_date, to_date, max_events, debug=False):
+    """Individual SSH authentication outcomes in range."""
+    events = []
+    logs = _journal_iso(["_SYSTEMD_UNIT=ssh.service"], from_date, to_date)
+    accepted = re.compile(r'Accepted (\S+) for (\S+) from (\S+)')
+    failed = re.compile(r'Failed (\S+) for (?:invalid user )?(\S+) from (\S+)')
+    invalid = re.compile(r'Invalid user (\S+) from (\S+)')
+    for line in logs.splitlines():
+        day, clock = _iso_parts(line)
+        if not day:
+            continue
+        ts = f'{day} {clock}'
+        m = accepted.search(line)
+        if m:
+            events.append({'ts': ts, 'ip': m.group(3), 'user': m.group(2),
+                           'outcome': 'accepted', 'method': m.group(1)})
+            continue
+        m = failed.search(line)
+        if m:
+            events.append({'ts': ts, 'ip': m.group(3), 'user': m.group(2),
+                           'outcome': 'failed', 'method': m.group(1)})
+            continue
+        m = invalid.search(line)
+        if m:
+            events.append({'ts': ts, 'ip': m.group(2), 'user': m.group(1),
+                           'outcome': 'invalid', 'method': 'none'})
+    if debug:
+        print(f"ssh events collected: {len(events)}")
+    return events[-max_events:] if max_events and len(events) > max_events else events
+
+
+def save_events_archive(from_date, to_date, debug=False):
+    """Write the day's individual log events so the page can re-process them client-side."""
+    if not ARCHIVE_EVENTS:
+        return None
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    day = _archive_date(from_date)
+    payload = {
+        'date': day,
+        'from_date': str(from_date),
+        'to_date': str(to_date),
+        'nginx': extract_nginx_events(from_date, to_date, ARCHIVE_MAX_EVENTS, debug),
+        'ufw': extract_ufw_events(from_date, to_date, ARCHIVE_MAX_EVENTS, debug),
+        'ssh': extract_ssh_events(from_date, to_date, ARCHIVE_MAX_EVENTS, debug),
+    }
+    body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+    path = os.path.join(ARCHIVE_DIR, f'{day}.events.json.gz')
+    with gzip.open(path, 'wb', compresslevel=9) as f:
+        f.write(body)
+    counts = {k: len(payload[k]) for k in ('nginx', 'ufw', 'ssh')}
+    journal.send(
+        MESSAGE=f"Event archive saved to {path} ({os.path.getsize(path)} bytes gz, {counts})",
+        SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    if debug:
+        print(f"Event archive {path}: {counts}")
+    return counts
+
 
 # Function to extract security events and categorize by severity
 def extract_security_events(ssh_attempts, nginx_access, nginx_errors, from_date, to_date, debug=False):
@@ -822,10 +1034,151 @@ def get_city_from_ip(ip_address):
             journal.send(MESSAGE=f"Error getting city from IP {ip_address}: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
         return "Unknown"
 
+def _json_default(obj):
+    if isinstance(obj, datetime):
+        return obj.strftime('%Y-%m-%d %H:%M:%S')
+    if isinstance(obj, set):
+        return list(obj)
+    raise TypeError(f"Not JSON serializable: {type(obj)}")
+
+
+def _archive_date(from_date):
+    """Name the daily archive after the report window start date."""
+    if isinstance(from_date, str):
+        try:
+            return datetime.strptime(from_date[:10], '%Y-%m-%d').date().isoformat()
+        except ValueError:
+            return datetime.now().date().isoformat()
+    if hasattr(from_date, 'date'):
+        return from_date.date().isoformat()
+    return str(from_date)[:10]
+
+
+def _top_n_items(mapping, n, total_fn):
+    """Return mapping limited to the n keys with the highest total_fn(value)."""
+    ranked = sorted(mapping.items(), key=lambda kv: total_fn(kv[1]), reverse=True)
+    return dict(ranked[:n])
+
+
+def _cap_country_details(country_details, n):
+    rows = []
+    for country, ips in country_details.items():
+        for ip, details in ips.items():
+            users = dict(details.get('users') or {})
+            total = sum(users.values())
+            rows.append((total, country, ip, details.get('city', ''), users))
+    rows.sort(key=lambda r: r[0], reverse=True)
+    out = {}
+    for _total, country, ip, city, users in rows[:n]:
+        out.setdefault(country, {})[ip] = {'city': city, 'users': users}
+    return out
+
+
+def _serialize_successful_logins(successful_logins):
+    out = {}
+    for ip, data in successful_logins.items():
+        out[ip] = {
+            'user': data.get('user', ''),
+            'count': data.get('count', 0),
+            'method': data.get('method', ''),
+            'timestamps': list(data.get('timestamps') or []),
+            'country': data.get('country', 'Unknown'),
+            'city': data.get('city', 'Unknown'),
+        }
+    return out
+
+
+def _serialize_events(events):
+    serialized = []
+    for event in events:
+        serialized.append({
+            'service': event.get('service', ''),
+            'event': event.get('event', ''),
+            'user': event.get('user', ''),
+            'ip': event.get('ip', ''),
+            'timestamp': event.get('timestamp', ''),
+            'message': (event.get('message') or '')[:500],
+        })
+    return serialized
+
+
+def prune_archives(archive_dir, max_days):
+    if max_days <= 0:
+        return
+    cutoff = datetime.now().date() - timedelta(days=max_days)
+    try:
+        names = os.listdir(archive_dir)
+    except FileNotFoundError:
+        return
+    for name in names:
+        if not name.endswith(('.json.gz', '.events.json.gz')) or len(name) < 10:
+            continue
+        try:
+            day = datetime.strptime(name[:10], '%Y-%m-%d').date()
+        except ValueError:
+            continue
+        if day < cutoff:
+            try:
+                os.remove(os.path.join(archive_dir, name))
+            except OSError:
+                pass
+
+
+def update_archive_index(archive_dir, day, headline):
+    index_path = os.path.join(archive_dir, 'index.json')
+    dates = []
+    if os.path.exists(index_path):
+        try:
+            with open(index_path, encoding='utf-8') as f:
+                existing = json.load(f)
+            dates = existing.get('dates') or []
+        except (OSError, json.JSONDecodeError):
+            dates = []
+    dates = [d for d in dates if d.get('date') != day]
+    dates.append(headline)
+    dates.sort(key=lambda d: d.get('date', ''), reverse=True)
+    # Drop index entries whose gzip file was pruned, and flag which days have
+    # a per-event archive available for the client-side log viewer.
+    keep = []
+    for entry in dates:
+        gz = os.path.join(archive_dir, f"{entry.get('date')}.json.gz")
+        if not os.path.exists(gz):
+            continue
+        entry['events'] = os.path.exists(
+            os.path.join(archive_dir, f"{entry.get('date')}.events.json.gz"))
+        keep.append(entry)
+    with open(index_path, 'w', encoding='utf-8') as f:
+        json.dump({'dates': keep}, f, separators=(',', ':'))
+
+
+def save_report_archive(payload, from_date):
+    """Write a gzipped JSON snapshot and refresh reports/index.json."""
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    day = _archive_date(from_date)
+    gz_path = os.path.join(ARCHIVE_DIR, f'{day}.json.gz')
+    body = json.dumps(payload, default=_json_default, separators=(',', ':')).encode('utf-8')
+    with gzip.open(gz_path, 'wb') as f:
+        f.write(body)
+    prune_archives(ARCHIVE_DIR, ARCHIVE_MAX_DAYS)
+    update_archive_index(ARCHIVE_DIR, day, {
+        'date': day,
+        'failed': payload.get('TOTAL_ATTEMPTS', 0),
+        'ufw': payload.get('TOTAL_UFW_BLOCKS', 0),
+        'success': payload.get('TOTAL_SUCCESS', 0),
+        'nginx': payload.get('TOTAL_NGINX_REQUESTS', 0),
+        'critical': payload.get('critical_count', 0),
+        'high': payload.get('high_count', 0),
+        'medium': payload.get('medium_count', 0),
+    })
+    journal.send(MESSAGE=f"Archive saved to {gz_path} ({len(body)} bytes uncompressed)",
+                 SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    return gz_path
+
 # Function to generate HTML report
-def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, nginx_access, TOTAL_NGINX_REQUESTS, nginx_errors, from_date, to_date,debug=False, tiles_override=None):
+def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS, nginx_access, TOTAL_NGINX_REQUESTS, nginx_errors, from_date, to_date,debug=False, tiles_override=None, archive_only=False, nginx_host_summary=None):
     env = Environment(loader=FileSystemLoader(ROOT))
     template = env.get_template(HACKER_TEMPLATE)
+    nginx_host_summary = nginx_host_summary or []
     # Choose tiles: CLI override > config default
     base_tiles = tiles_override if tiles_override else tiles_default
     m = folium.Map(location=[0, 0], zoom_start=2, tiles=base_tiles)  # Create a map object with selected tiles
@@ -893,6 +1246,7 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
 
     # Track locations to add slight jitter for overlapping markers
     location_counts = defaultdict(int)
+    map_points = []
     
     # Add SSH attack attempts to map
     for ip_address, attempts in ssh_attempts.items():
@@ -941,6 +1295,10 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                 fillColor=color,
                 fillOpacity=0.7
             ).add_to(m)
+            map_points.append({
+                'ip': ip_address, 'lat': lat, 'lon': lon, 'kind': 'ssh',
+                'count': total_count, 'city': city or ''
+            })
 
     # Add UFW blocked IPs to map with different markers
     for ip_address, ports in ufw_blocks.items():
@@ -982,6 +1340,10 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                 fillColor=color,
                 fillOpacity=0.7
             ).add_to(m)
+            map_points.append({
+                'ip': ip_address, 'lat': lat, 'lon': lon, 'kind': 'ufw',
+                'count': total_blocks, 'city': city or ''
+            })
     
     # Add some test UFW data for demonstration if no real data exists
     if not ufw_blocks:
@@ -1055,6 +1417,10 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                     fillOpacity=0.8,
                     weight=3
                 ).add_to(m)
+                map_points.append({
+                    'ip': ip_address, 'lat': lat, 'lon': lon, 'kind': 'critical',
+                    'count': event_count, 'city': city or ''
+                })
         
         for ip_address in security_event_ips['high']:
             city, lat, lon = get_city_and_coords_from_ip(ip_address)
@@ -1080,6 +1446,10 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                     fillOpacity=0.8,
                     weight=3
                 ).add_to(m)
+                map_points.append({
+                    'ip': ip_address, 'lat': lat, 'lon': lon, 'kind': 'high',
+                    'count': event_count, 'city': city or ''
+                })
         
         for ip_address in security_event_ips['medium']:
             city, lat, lon = get_city_and_coords_from_ip(ip_address)
@@ -1105,6 +1475,10 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                     fillOpacity=0.8,
                     weight=3
                 ).add_to(m)
+                map_points.append({
+                    'ip': ip_address, 'lat': lat, 'lon': lon, 'kind': 'medium',
+                    'count': event_count, 'city': city or ''
+                })
     
     # Add nginx IPs to map
     if ENABLE_NGINX_MARKERS:
@@ -1147,15 +1521,20 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
                     fillOpacity=0.7,
                     weight=2
                 ).add_to(m)
+                map_points.append({
+                    'ip': ip_address, 'lat': lat, 'lon': lon, 'kind': 'nginx',
+                    'count': total_requests, 'city': city or ''
+                })
                 nginx_count += 1
         
         if debug:
             print(f"Added {nginx_count} nginx IP markers to map (out of {len(nginx_access)} total nginx IPs)")
     
-    m.save(HACKER_MAP)  # Save the map to an HTML file
+    if not archive_only:
+        m.save(HACKER_MAP)  # Save the map to an HTML file
     
     # Add legend to map
-    if ENABLE_LEGEND:
+    if ENABLE_LEGEND and not archive_only:
         # Add custom legend by injecting HTML into the saved map file using a safer method
         try:
             with open(HACKER_MAP, 'r', encoding='utf-8') as f:
@@ -1289,6 +1668,7 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
         ufw_port_summary=ufw_port_summary,
         ufw_details=ufw_details,
         nginx_requests_count=len(nginx_access),
+        nginx_host_summary=nginx_host_summary,
         nginx_country_requests=nginx_country_requests,
         nginx_status_summary=nginx_status_summary,
         nginx_details=nginx_details,
@@ -1299,13 +1679,73 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
         severity_high=high_events,
         severity_medium=medium_events,
         report_time=report_time,
+        hostname=hostname,
         from_date=from_date,
         to_date=to_date
     )
 
-    with open(HACKER_REPORT, "w") as f:
-        f.write(html_content)
-    journal.send(MESSAGE=f"Report saved to {HACKER_REPORT}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    if not archive_only:
+        with open(HACKER_REPORT, "w") as f:
+            f.write(html_content)
+        journal.send(MESSAGE=f"Report saved to {HACKER_REPORT}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+
+    # Individual log events for the in-page viewer (written before the summary
+    # so the index can flag which days have event data).
+    try:
+        save_events_archive(from_date, to_date, debug=debug)
+    except Exception as e:
+        journal.send(MESSAGE=f"Failed to write event archive: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+        if debug:
+            print(f"Warning: Failed to write event archive: {e}")
+
+    nginx_errors_archive = []
+    for err in nginx_errors[-20:]:
+        nginx_errors_archive.append({
+            'time': err.get('time'),
+            'level': err.get('level', ''),
+            'message': (err.get('message') or '')[:300],
+        })
+    try:
+        save_report_archive({
+            'hostname': hostname,
+            'report_time': report_time,
+            'from_date': from_date,
+            'to_date': to_date,
+            'TOTAL_ATTEMPTS': TOTAL_ATTEMPTS,
+            'TOTAL_SUCCESS': TOTAL_SUCCESS,
+            'TOTAL_UFW_BLOCKS': TOTAL_UFW_BLOCKS,
+            'TOTAL_NGINX_REQUESTS': TOTAL_NGINX_REQUESTS,
+            'ip_count': len(ssh_attempts),
+            'country_count': len(country_attempts),
+            'city_count': len(city_attempts),
+            'user_count': len(user_attempts),
+            'country_attempts': country_attempts,
+            'user_attempts': user_attempts,
+            'country_details': _cap_country_details(country_details, ARCHIVE_TOP_N),
+            'ufw_blocks_count': len(ufw_blocks),
+            'ufw_country_attempts': ufw_country_attempts,
+            'ufw_port_summary': ufw_port_summary,
+            'ufw_details': _top_n_items(ufw_details, ARCHIVE_TOP_N, lambda d: d.get('total', 0)),
+            'nginx_requests_count': len(nginx_access),
+            'nginx_host_summary': nginx_host_summary,
+            'nginx_country_requests': nginx_country_requests,
+            'nginx_status_summary': nginx_status_summary,
+            'nginx_details': _top_n_items(nginx_details, ARCHIVE_TOP_N, lambda d: d.get('total', 0)),
+            'nginx_errors': nginx_errors_archive,
+            'successful_logins': _serialize_successful_logins(successful_logins),
+            'successful_country_attempts': successful_country_attempts,
+            'severity_critical': _serialize_events(critical_events),
+            'severity_high': _serialize_events(high_events),
+            'severity_medium': _serialize_events(medium_events),
+            'critical_count': len(critical_events),
+            'high_count': len(high_events),
+            'medium_count': len(medium_events),
+            'map_points': map_points,
+        }, from_date)
+    except Exception as e:
+        journal.send(MESSAGE=f"Failed to write report archive: {e}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+        if debug:
+            print(f"Warning: Failed to write report archive: {e}")
     
     # Return statistics for email summary
     return {
@@ -1318,6 +1758,7 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
         'ufw_country_attempts': ufw_country_attempts,
         'ufw_port_summary': ufw_port_summary,
         'nginx_requests_count': len(nginx_access),
+        'nginx_host_summary': nginx_host_summary,
         'nginx_country_requests': nginx_country_requests,
         'nginx_status_summary': nginx_status_summary,
         'nginx_errors_count': len(nginx_errors),
@@ -1332,7 +1773,7 @@ def send_email(report_url, recipient_email, total_attempts, ip_count, country_co
                top_countries, top_users, total_ufw_blocks, ufw_blocks_count, ufw_top_countries, 
                ufw_top_ports, total_nginx_requests, nginx_requests_count, nginx_top_countries,
                nginx_status_summary, nginx_errors_count, total_success, critical_count, high_count, 
-               medium_count, from_date, to_date, debug=False):
+               medium_count, from_date, to_date, debug=False, nginx_host_summary=None):
     hostname = subprocess.check_output("hostname").decode("utf-8").strip()
 
     # Create email headers and body with summary
@@ -1397,6 +1838,12 @@ User IDs Targeted: {user_count}
     body += f"\n=== WEB SERVER ACTIVITY (NGINX) ===\n"
     body += f"Total Requests: {total_nginx_requests}\n"
     body += f"Unique IPs: {nginx_requests_count}\n"
+
+    if nginx_host_summary:
+        body += "\n=== REQUESTS BY VIRTUAL HOST ===\n"
+        for rec in nginx_host_summary:
+            proxied = " (proxied)" if rec.get('proxied') else ""
+            body += f"{rec['host']:30s} : {rec['total']:6d} requests from {rec['ips']} IPs{proxied}\n"
     
     if nginx_status_summary:
         body += "\n=== HTTP STATUS CODES ===\n"
@@ -1502,6 +1949,8 @@ def main():
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode for more verbose output")
     parser.add_argument("--no-email", action="store_true", help="Skip sending email (generate report only)")
+    parser.add_argument("--archive-only", action="store_true",
+                        help="Write the JSON archives for the date range without overwriting the live report/map or emailing (used for backfill)")
     parser.add_argument(
         "--tiles",
         required=False,
@@ -1544,14 +1993,15 @@ def main():
     # Extract SSH authentication failures, UFW firewall blocks, and nginx access logs
     attack_attempts, TOTAL_ATTEMPTS = extract_attack_attempts(norm_from, norm_to,debug=args.debug)
     ufw_blocks, TOTAL_UFW_BLOCKS = extract_ufw_blocks(norm_from, norm_to,debug=args.debug)
-    nginx_access, nginx_errors, TOTAL_NGINX_REQUESTS = extract_nginx_logs(norm_from, norm_to,debug=args.debug)
+    nginx_access, nginx_errors, TOTAL_NGINX_REQUESTS, nginx_host_summary = extract_nginx_logs(norm_from, norm_to,debug=args.debug)
     
     stats = generate_html_report(attack_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLOCKS,
                                  nginx_access, TOTAL_NGINX_REQUESTS, nginx_errors,
-                                 norm_from, norm_to,debug=args.debug, tiles_override=args.tiles)
+                                 norm_from, norm_to,debug=args.debug, tiles_override=args.tiles,
+                                 archive_only=args.archive_only, nginx_host_summary=nginx_host_summary)
 
     # Email the report link with summary statistics (unless --no-email flag is set)
-    if not args.no_email:
+    if not args.no_email and not args.archive_only:
         try:
             send_email(
                 report_url, 
@@ -1577,7 +2027,8 @@ def main():
                 stats['medium_count'],
                 norm_from,
                 norm_to,
-                debug=args.debug
+                debug=args.debug,
+                nginx_host_summary=stats.get('nginx_host_summary'),
             )
         except Exception as e:
             journal.send(MESSAGE=f"Failed to send email: {e}. Report still generated at {report_url}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")

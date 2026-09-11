@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Hacking Attempts</title>
     <link rel="icon" href="/images/favicon.ico" type="image/x-icon">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
 
@@ -306,10 +307,106 @@
             transform: translateX(5px);
             box-shadow: -5px 0 0 rgba(0, 255, 65, 0.5);
         }
+
+        .date-nav {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            margin: 0 0 20px 0;
+            padding: 12px 15px;
+            border: 1px solid #00ff41;
+            background: rgba(10, 10, 10, 0.8);
+            box-shadow: 0 0 12px rgba(0, 255, 65, 0.2);
+        }
+        .date-nav button {
+            font-family: 'Orbitron', monospace;
+            background: #003d29;
+            color: #00ff41;
+            border: 1px solid #00ff41;
+            padding: 8px 14px;
+            cursor: pointer;
+            letter-spacing: 1px;
+        }
+        .date-nav button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .date-nav button:not(:disabled):hover {
+            background: #00523d;
+            box-shadow: 0 0 10px rgba(0, 255, 65, 0.4);
+        }
+        .date-nav input[type="date"] {
+            font-family: 'Share Tech Mono', monospace;
+            background: #001a0f;
+            color: #00ff41;
+            border: 1px solid #00ff41;
+            padding: 6px 10px;
+        }
+        .date-nav .date-status {
+            color: #00d9ff;
+            font-size: 0.9em;
+        }
+        #archive-map {
+            height: 600px;
+            width: 100%;
+            border: 2px solid #00ff41;
+            background: #111;
+        }
+
+        .log-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .log-controls input[type="search"] {
+            flex: 1 1 260px;
+            font-family: 'Share Tech Mono', monospace;
+            background: #001a0f;
+            color: #00ff41;
+            border: 1px solid #00ff41;
+            padding: 8px 10px;
+        }
+        .log-controls select,
+        .log-controls button {
+            font-family: 'Share Tech Mono', monospace;
+            background: #001a0f;
+            color: #00ff41;
+            border: 1px solid #00ff41;
+            padding: 8px 10px;
+            cursor: pointer;
+        }
+        .log-meta {
+            color: #00d9ff;
+            font-size: 0.9em;
+            margin-bottom: 8px;
+        }
+        #log-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86em;
+        }
+        #log-table th, #log-table td {
+            padding: 6px 8px;
+            border-bottom: 1px solid rgba(0, 255, 65, 0.15);
+            text-align: left;
+            vertical-align: top;
+        }
+        #log-table td.wrap {
+            word-break: break-all;
+            max-width: 420px;
+        }
+        .kind-nginx { color: #00d9ff; }
+        .kind-ufw { color: #b98cff; }
+        .kind-ssh { color: #00ff41; }
+        .st-err { color: #ff0055; }
+        .st-warn { color: #ffaa00; }
     </style>
 </head>
 
-<body>
+<body data-archive-date="{{ from_date[:10] }}">
     <div class="scanline"></div>
     <div class="container">
     <h1>⚡ Hacking Attempts ⚡</h1>
@@ -319,54 +416,61 @@
         <img src="https://www.abuseipdb.com/contributor/51468.svg" height="80" class="header-img">
     </a>
     <h2>Summary</h2>
+    <div class="date-nav" id="date-nav">
+        <button type="button" id="date-prev" aria-label="Previous day">&lt; Prev</button>
+        <input type="date" id="date-picker" value="{{ from_date[:10] }}">
+        <button type="button" id="date-next" aria-label="Next day">Next &gt;</button>
+        <span class="date-status" id="date-status">Live report</span>
+    </div>
     <table class="summary-table">
         <tr>
             <td>Date and Time:</td>
-            <td>{{ report_time }}</td>
+            <td id="summary-report-time">{{ report_time }}</td>
         </tr>
         <tr>
             <td>Hostname:</td>
-            <td id="hostname">Loading...</td>
+            <td id="hostname">{{ hostname }}</td>
         </tr>
         <tr>
             <td>Period:</td>
-            <td>{{ from_date }} to {{ to_date }}</td>
+            <td id="summary-period">{{ from_date }} to {{ to_date }}</td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(0, 255, 65, 0.05);" onclick="location.href='#failed-attempts'">
             <td style="color: #00ff41;">🔒 Total Failed Attempts:</td>
-            <td style="color: #00ff41;">{{ TOTAL_ATTEMPTS }}</td>
+            <td style="color: #00ff41;" id="summary-failed">{{ TOTAL_ATTEMPTS }}</td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(0, 217, 255, 0.15);" onclick="location.href='#ufw-blocks'">
             <td style="color: #00d9ff;"><strong>🛡️ Blocked by UFW Firewall:</strong></td>
-            <td style="color: #00d9ff;"><strong>{{ TOTAL_UFW_BLOCKS }}</strong></td>
+            <td style="color: #00d9ff;" id="summary-ufw"><strong>{{ TOTAL_UFW_BLOCKS }}</strong></td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(255, 0, 85, 0.15);" onclick="location.href='#successful-logins'">
             <td style="color: #ff0055;"><strong>🚨 Successful Logins:</strong></td>
-            <td style="color: #ff0055;"><strong>{{ TOTAL_SUCCESS }}</strong></td>
+            <td style="color: #ff0055;" id="summary-success"><strong>{{ TOTAL_SUCCESS }}</strong></td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(255, 0, 85, 0.15);" onclick="location.href='#security-events'">
             <td style="color: #ff0055;"><strong>🔴 Critical Security Events:</strong></td>
-            <td style="color: #ff0055;"><strong>{{ severity_critical|length }}</strong></td>
+            <td style="color: #ff0055;" id="summary-critical"><strong>{{ severity_critical|length }}</strong></td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(255, 170, 0, 0.1);" onclick="location.href='#security-events'">
             <td style="color: #ffaa00;">⚠️ High Severity Events:</td>
-            <td style="color: #ffaa00;">{{ severity_high|length }}</td>
+            <td style="color: #ffaa00;" id="summary-high">{{ severity_high|length }}</td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(0, 217, 255, 0.05);" onclick="location.href='#security-events'">
             <td style="color: #00d9ff;">ℹ️ Medium Severity Events:</td>
-            <td style="color: #00d9ff;">{{ severity_medium|length }}</td>
+            <td style="color: #00d9ff;" id="summary-medium">{{ severity_medium|length }}</td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(0, 217, 255, 0.1);" onclick="location.href='#ufw-blocks'">
             <td style="color: #00d9ff;">🔥 Unique IPs Blocked by UFW:</td>
-            <td style="color: #00d9ff;">{{ ufw_blocks_count }}</td>
+            <td style="color: #00d9ff;" id="summary-ufw-ips">{{ ufw_blocks_count }}</td>
         </tr>
         <tr class="clickable-row" style="background-color: rgba(0, 255, 65, 0.1);" onclick="location.href='#nginx-activity'">
             <td style="color: #00ff41;">🌐 Web Server Requests (nginx):</td>
-            <td style="color: #00ff41;">{{ TOTAL_NGINX_REQUESTS }} ({{ nginx_requests_count }} unique IPs)</td>
+            <td style="color: #00ff41;" id="summary-nginx">{{ TOTAL_NGINX_REQUESTS }} ({{ nginx_requests_count }} unique IPs)</td>
         </tr>
     </table>
 
     <h2 id="successful-logins">🚨 Successful Logins</h2>
+    <div id="dyn-successful">
     {% if TOTAL_SUCCESS > 0 %}
     <div class="alert-box danger">
         <p><strong>{{ TOTAL_SUCCESS }}</strong> successful authentication(s) detected during this period.</p>
@@ -412,8 +516,10 @@
         <p>All authentication attempts were blocked - system security is intact.</p>
     </div>
     {% endif %}
+    </div>
 
     <h2 id="failed-attempts">🔒 Failed Login Attempts</h2>
+    <div id="dyn-failed">
     <div class="alert-box warning">
         <p><strong>{{ TOTAL_ATTEMPTS }}</strong> failed authentication attempts from <strong>{{ ip_count }}</strong> unique IP addresses across <strong>{{ country_count }}</strong> countries.</p>
         <p>These attacks were blocked by SSH authentication. Persistent attackers are reported to AbuseIPDB and blocked by Fail2Ban.</p>
@@ -475,8 +581,10 @@
             {% endif %}
         </table>
     </div>
+    </div>
 
     <h2 id="ufw-blocks">🛡️ UFW Firewall Blocks</h2>
+    <div id="dyn-ufw">
     {% if TOTAL_UFW_BLOCKS > 0 %}
     <div class="alert-box info">
         <p><strong>{{ TOTAL_UFW_BLOCKS }}</strong> connection attempts were blocked at the firewall level before reaching services.</p>
@@ -562,12 +670,44 @@
         <p>Either UFW is not active, or no attacks were blocked during this period.</p>
     </div>
     {% endif %}
+    </div>
 
     <h2 id="nginx-activity">🌐 Web Server Activity (nginx)</h2>
+    <div id="dyn-nginx">
     {% if TOTAL_NGINX_REQUESTS > 0 %}
     <div class="alert-box success">
         <p><strong>{{ TOTAL_NGINX_REQUESTS }}</strong> web requests from <strong>{{ nginx_requests_count }}</strong> unique external IPs.</p>
-        <p>This section shows legitimate web traffic and potential scanning activity.</p>
+        <p>This section shows legitimate web traffic and potential scanning activity. Proxied hosts (odin/loki/thor) are listed separately from {{ hostname }}.</p>
+    </div>
+
+    <button class="collapsible">Requests by Virtual Host</button>
+    <div class="content">
+        {% if nginx_host_summary %}
+            <table>
+                <tr>
+                    <th>Host</th>
+                    <th>Requests</th>
+                    <th>Unique IPs</th>
+                    <th>Status Codes</th>
+                    <th>Type</th>
+                </tr>
+                {% for rec in nginx_host_summary %}
+                <tr>
+                    <td>{{ rec.host }}</td>
+                    <td>{{ rec.total }}</td>
+                    <td>{{ rec.ips }}</td>
+                    <td>
+                        {% for status, count in rec.statuses.items() %}
+                            {{ status }}({{ count }}){% if not loop.last %}, {% endif %}
+                        {% endfor %}
+                    </td>
+                    <td>{% if rec.proxied %}Reverse proxy{% else %}Local{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <p>No Host header in the access log yet (older combined-format lines). After nginx logs <code>host=$host</code>, this table splits home/odin/loki/thor.</p>
+        {% endif %}
     </div>
 
     <button class="collapsible">Requests by Country</button>
@@ -670,8 +810,10 @@
         <p>Either nginx is not running or no external requests were made during this period.</p>
     </div>
     {% endif %}
+    </div>
 
     <h2 id="security-events">📊 Security Events by Severity</h2>
+    <div id="dyn-events">
     <div class="alert-box info">
         <p>Comprehensive security monitoring from multiple sources: <strong>auditd</strong>, <strong>SSH</strong>, <strong>nginx</strong>, <strong>rkhunter</strong>, <strong>AIDE</strong>, <strong>ClamAV</strong>, <strong>chkrootkit</strong>, <strong>Lynis</strong>, <strong>Tiger</strong>, and <strong>psad</strong>.</p>
         <p>Events are categorized by severity: 🔴 Critical ({{ severity_critical|length }}), ⚠️ High ({{ severity_high|length }}), ℹ️ Medium ({{ severity_medium|length }})</p>
@@ -771,6 +913,7 @@
         </div>
         {% endif %}
     </div>
+    </div>
 
     <h2>🗺️ Map of Attack Attempts</h2>
     <div class="alert-box info">
@@ -782,51 +925,577 @@
         <p><span style="color: #ff0000;">🔴 Red/Orange/Yellow/Green circles:</span> SSH attack attempts (size indicates severity)</p>
         <p><span style="color: #9400d3;">🟣 Dark Purple/Purple/Medium Purple/Plum circles:</span> UFW firewall blocks (size indicates block count)</p>
         <p>Click on markers to see detailed information including IP addresses, attempt counts, and targeted ports.</p>
-        <p><em>Note: A legend is also displayed on the map itself in the bottom-right corner.</em></p>
+        <p><em>Note: Today’s map is the Folium snapshot. Other dates plot archived points with Leaflet (no extra map files stored).</em></p>
     </div>
-    <iframe src="HackedSSH_Map.html" width="100%" height="600"></iframe>
+    <div id="live-map-wrap">
+        <iframe src="HackedSSH_Map.html" width="100%" height="600" title="Attack map"></iframe>
+    </div>
+    <div id="archive-map" style="display:none;"></div>
+
+    <h2 id="raw-logs">🔎 Raw Log Events</h2>
+    <div class="alert-box info">
+        <p>The individual log lines behind the figures above, for the selected day. Filtering, searching and grouping happen in your browser - nothing is sent back to the server.</p>
+    </div>
+    <div class="log-controls">
+        <input type="search" id="log-search" placeholder="Search IP, URL, user, user-agent…" autocomplete="off">
+        <select id="log-kind">
+            <option value="all">All sources</option>
+            <option value="nginx">nginx requests</option>
+            <option value="ufw">UFW blocks</option>
+            <option value="ssh">SSH auth</option>
+        </select>
+        <select id="log-status">
+            <option value="all">All results</option>
+            <option value="err">Errors (4xx/5xx, failed auth)</option>
+            <option value="ok">Success (2xx/3xx, accepted)</option>
+        </select>
+        <button type="button" id="log-load">Load log events</button>
+    </div>
+    <div class="log-meta" id="log-meta">Log events are loaded on demand.</div>
+    <div class="table-wrapper">
+        <table id="log-table">
+            <thead>
+                <tr><th>Time</th><th>Source</th><th>IP</th><th>Detail</th><th>Result</th></tr>
+            </thead>
+            <tbody id="log-body"></tbody>
+        </table>
+    </div>
+    <div class="log-controls" style="margin-top:10px;">
+        <button type="button" id="log-more" style="display:none;">Show more</button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
     <script>
-        // Set the hostname
-        document.getElementById('hostname').innerText = window.location.host;
-
-        // Collapsible sections
-        document.querySelectorAll(".collapsible").forEach(button => {
-            button.addEventListener("click", function () {
-                this.classList.toggle("active");
-                var content = this.nextElementSibling;
-                if (content.style.display === "block") {
-                    content.style.display = "none";
-                } else {
-                    content.style.display = "block";
-                }
-            });
-        });
-
-        // Initially collapse sections
-        window.onload = function () {
-            document.querySelectorAll(".collapsible").forEach(button => {
-                button.nextElementSibling.style.display = "none";
-            });
-            // Auto-expand if hash points to a known section
-            const hash = window.location.hash;
-            if (hash) {
-                const target = document.querySelector(hash);
-                if (target) {
-                    // Find the nearest following collapsible to open
-                    let btn = target.tagName.toLowerCase() === 'button' ? target : target.nextElementSibling;
-                    // If anchor used, the next element should be the button
-                    if (target.tagName.toLowerCase() === 'a') {
-                        btn = target.nextElementSibling;
-                    }
-                    if (btn && btn.classList.contains('collapsible')) {
-                        btn.classList.add('active');
-                        const content = btn.nextElementSibling;
-                        if (content) content.style.display = "block";
-                    }
-                }
-            }
+        const LIVE_DATE = document.body.getAttribute('data-archive-date');
+        const PORT_NAMES = {
+            '22': 'SSH', '80': 'HTTP', '443': 'HTTPS', '3389': 'RDP',
+            '3306': 'MySQL', '5432': 'PostgreSQL', '21': 'FTP', '25': 'SMTP'
         };
+        const KIND_STYLE = {
+            ssh: { color: 'green', radius: 6 },
+            ufw: { color: 'purple', radius: 8 },
+            nginx: { color: 'cyan', radius: 5 },
+            critical: { color: 'red', radius: 12 },
+            high: { color: 'orange', radius: 10 },
+            medium: { color: 'gold', radius: 8 }
+        };
+
+        let archiveDates = [];
+        let archiveIndex = [];
+        let currentDate = LIVE_DATE;
+        let archiveMap = null;
+        let archiveLayer = null;
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[ch]));
+        }
+
+        function whois(ip) {
+            const safe = escapeHtml(ip);
+            return `<a href="https://www.abuseipdb.com/whois/${encodeURIComponent(ip)}" target="_blank">${safe}</a>`;
+        }
+
+        function bindCollapsibles(root) {
+            const scope = root || document;
+            scope.querySelectorAll('.collapsible').forEach(button => {
+                if (button.dataset.bound === '1') return;
+                button.dataset.bound = '1';
+                const content = button.nextElementSibling;
+                if (content && !button.disabled) {
+                    content.style.display = 'none';
+                }
+                button.addEventListener('click', function () {
+                    if (this.disabled) return;
+                    this.classList.toggle('active');
+                    const next = this.nextElementSibling;
+                    if (!next) return;
+                    next.style.display = next.style.display === 'block' ? 'none' : 'block';
+                });
+            });
+        }
+
+        function pairs(value) {
+            if (!value) return [];
+            if (Array.isArray(value)) return value;
+            return Object.entries(value);
+        }
+
+        function statusLabel(status) {
+            const labels = {
+                '200': 'OK', '304': 'Not Modified (Cached)', '404': 'Not Found',
+                '403': 'Forbidden', '500': 'Server Error', '502': 'Bad Gateway',
+                '400': 'Bad Request'
+            };
+            return labels[String(status)] || ('Status ' + status);
+        }
+
+        function eventTable(events, color, bg) {
+            if (!events || !events.length) return '';
+            const rows = events.map(ev => `
+                <tr style="background-color:${bg};">
+                    <td style="color:${color};"><strong>${escapeHtml(ev.service)}</strong></td>
+                    <td style="color:${color};">${escapeHtml(ev.event)}</td>
+                    <td>${escapeHtml(ev.user)}</td>
+                    <td>${whois(ev.ip)}</td>
+                    <td>${escapeHtml(ev.timestamp)}</td>
+                    <td style="font-size:0.9em;max-width:400px;">${escapeHtml((ev.message || '').slice(0, 150))}</td>
+                </tr>`).join('');
+            return `<div class="table-wrapper"><table>
+                <tr><th>Service</th><th>Event Type</th><th>User</th><th>IP Address</th><th>Timestamp</th><th>Details</th></tr>
+                ${rows}</table></div>`;
+        }
+
+        function renderSuccessful(data) {
+            const total = data.TOTAL_SUCCESS || 0;
+            if (!total) {
+                return `<div class="alert-box success"><h3>No Successful Logins Detected</h3>
+                    <p>All authentication attempts were blocked - system security is intact.</p></div>`;
+            }
+            const rows = Object.entries(data.successful_logins || {}).map(([ip, login]) => {
+                const method = login.method === 'publickey'
+                    ? '<span style="color:#00ff41;">SSH Key</span>'
+                    : '<span style="color:#ffaa00;">Password</span>';
+                const ts = (login.timestamps || []).slice(0, 3).join(', ');
+                return `<tr>
+                    <td>${whois(ip)}</td>
+                    <td><strong>${escapeHtml(login.user)}</strong></td>
+                    <td>${method}</td>
+                    <td>${escapeHtml(login.country)}</td>
+                    <td>${escapeHtml(login.city)}</td>
+                    <td>${escapeHtml(login.count)}</td>
+                    <td style="font-size:0.9em;">${escapeHtml(ts)}</td>
+                </tr>`;
+            }).join('');
+            return `<div class="alert-box danger">
+                <p><strong>${total}</strong> successful authentication(s) detected during this period.</p>
+                <p>Review the IPs, users, and authentication methods to ensure they are authorized.</p>
+            </div>
+            <button class="collapsible critical">View Successful Login Details</button>
+            <div class="content"><div class="table-wrapper"><table>
+                <tr><th>IP Address</th><th>User</th><th>Method</th><th>Country</th><th>City</th><th>Login Count</th><th>Timestamps</th></tr>
+                ${rows}
+            </table></div></div>`;
+        }
+
+        function renderFailed(data) {
+            let countries = '';
+            const attempts = pairs(data.country_attempts);
+            if (attempts.length) {
+                countries = attempts.map(([country, count]) => {
+                    const details = (data.country_details || {})[country] || {};
+                    let rows = '';
+                    Object.entries(details).forEach(([ip, det]) => {
+                        Object.entries(det.users || {}).forEach(([user, n]) => {
+                            rows += `<tr><td>${whois(ip)}</td><td>${escapeHtml(det.city)}</td>
+                                <td>${escapeHtml(user)}</td><td>${escapeHtml(n)}</td></tr>`;
+                        });
+                    });
+                    if (!rows) rows = '<tr><td colspan="4">No data available for this country.</td></tr>';
+                    return `<button class="collapsible">${escapeHtml(country)}: ${escapeHtml(count)} attempts</button>
+                        <div class="content"><div class="table-wrapper"><table>
+                        <tr><th>IP Address</th><th>City</th><th>UserID</th><th>Attempts</th></tr>
+                        ${rows}</table></div></div>`;
+                }).join('');
+            } else {
+                countries = '<p>No country data available.</p>';
+            }
+            const users = pairs(data.user_attempts).map(([user, n]) =>
+                `<tr><td>${escapeHtml(user)}</td><td>${escapeHtml(n)}</td></tr>`).join('')
+                || '<tr><td colspan="2">No user data available.</td></tr>';
+            return `<div class="alert-box warning">
+                <p><strong>${data.TOTAL_ATTEMPTS || 0}</strong> failed authentication attempts from
+                <strong>${data.ip_count || 0}</strong> unique IP addresses across
+                <strong>${data.country_count || 0}</strong> countries.</p>
+            </div>
+            <button class="collapsible">Attempts by Country</button>
+            <div class="content">${countries}</div>
+            <button class="collapsible">Attempts by User</button>
+            <div class="content"><table>
+                <tr><th>UserID</th><th>Attempts</th></tr>${users}
+            </table></div>`;
+        }
+
+        function renderUfw(data) {
+            if (!(data.TOTAL_UFW_BLOCKS > 0)) {
+                return `<div class="alert-box success"><h3>No UFW Blocks Detected</h3>
+                    <p>Either UFW is not active, or no attacks were blocked during this period.</p></div>`;
+            }
+            const byCountry = pairs(data.ufw_country_attempts).map(([country, count]) => {
+                let rows = '';
+                Object.entries(data.ufw_details || {}).forEach(([ip, det]) => {
+                    if (det.country !== country) return;
+                    const ports = Object.entries(det.ports || {}).map(([p, n]) => `${p}(${n})`).join(', ');
+                    rows += `<tr><td>${whois(ip)}</td><td>${escapeHtml(det.city)}</td>
+                        <td>${escapeHtml(ports)}</td><td>${escapeHtml(det.total)}</td></tr>`;
+                });
+                if (!rows) rows = '<tr><td colspan="4">No data available for this country.</td></tr>';
+                return `<button class="collapsible">${escapeHtml(country)}: ${escapeHtml(count)} blocks</button>
+                    <div class="content"><div class="table-wrapper"><table>
+                    <tr><th>IP Address</th><th>City</th><th>Ports Targeted</th><th>Total Blocks</th></tr>
+                    ${rows}</table></div></div>`;
+            }).join('') || '<p>No UFW block data by country available.</p>';
+            const byPort = pairs(data.ufw_port_summary).map(([port, count]) =>
+                `<tr><td>${escapeHtml(port)}</td><td>${escapeHtml(PORT_NAMES[String(port)] || 'Unknown')}</td>
+                 <td>${escapeHtml(count)}</td></tr>`).join('');
+            return `<div class="alert-box info">
+                <p><strong>${data.TOTAL_UFW_BLOCKS}</strong> connection attempts were blocked at the firewall level before reaching services.</p>
+            </div>
+            <button class="collapsible">Blocks by Country</button>
+            <div class="content">${byCountry}</div>
+            <button class="collapsible">Blocks by Port</button>
+            <div class="content">${byPort ? `<table><tr><th>Port</th><th>Service</th><th>Total Blocks</th></tr>${byPort}</table>` : '<p>No UFW block data by port available.</p>'}</div>`;
+        }
+
+        function renderNginx(data) {
+            if (!(data.TOTAL_NGINX_REQUESTS > 0)) {
+                return `<div class="alert-box info"><h3>No nginx Data Available</h3>
+                    <p>Either nginx is not running or no external requests were made during this period.</p></div>`;
+            }
+            const byCountry = pairs(data.nginx_country_requests).map(([country, count]) => {
+                let rows = '';
+                Object.entries(data.nginx_details || {}).forEach(([ip, det]) => {
+                    if (det.country !== country) return;
+                    const st = Object.entries(det.statuses || {}).map(([s, n]) => `${s}(${n})`).join(', ');
+                    rows += `<tr><td>${whois(ip)}</td><td>${escapeHtml(det.city)}</td>
+                        <td>${escapeHtml(st)}</td><td>${escapeHtml(det.total)}</td></tr>`;
+                });
+                if (!rows) rows = '<tr><td colspan="4">No data available for this country.</td></tr>';
+                return `<button class="collapsible">${escapeHtml(country)}: ${escapeHtml(count)} requests</button>
+                    <div class="content"><div class="table-wrapper"><table>
+                    <tr><th>IP Address</th><th>City</th><th>Status Codes</th><th>Total Requests</th></tr>
+                    ${rows}</table></div></div>`;
+            }).join('') || '<p>No web request data by country available.</p>';
+            const statuses = pairs(data.nginx_status_summary).map(([status, count]) =>
+                `<tr><td>${escapeHtml(status)}</td><td>${escapeHtml(statusLabel(status))}</td>
+                 <td>${escapeHtml(count)}</td></tr>`).join('');
+            const errors = data.nginx_errors || [];
+            const errBlock = errors.length ? `<button class="collapsible warning-level">nginx Errors (${errors.length})</button>
+                <div class="content"><div class="table-wrapper"><table>
+                <tr><th>Time</th><th>Level</th><th>Message</th></tr>
+                ${errors.map(e => `<tr><td>${escapeHtml(e.time)}</td><td>${escapeHtml(e.level)}</td>
+                    <td style="font-size:0.9em;">${escapeHtml(e.message)}</td></tr>`).join('')}
+                </table></div></div>` : '';
+            const hostRows = (data.nginx_host_summary || []).map(rec => {
+                const st = Object.entries(rec.statuses || {}).map(([s, n]) => `${s}(${n})`).join(', ');
+                return `<tr><td>${escapeHtml(rec.host)}</td><td>${escapeHtml(rec.total)}</td>
+                    <td>${escapeHtml(rec.ips)}</td><td>${escapeHtml(st)}</td>
+                    <td>${rec.proxied ? 'Reverse proxy' : 'Local'}</td></tr>`;
+            }).join('');
+            const hostTable = hostRows
+                ? `<button class="collapsible">Requests by Virtual Host</button>
+                   <div class="content"><table>
+                   <tr><th>Host</th><th>Requests</th><th>Unique IPs</th><th>Status Codes</th><th>Type</th></tr>
+                   ${hostRows}</table></div>`
+                : `<button class="collapsible">Requests by Virtual Host</button>
+                   <div class="content"><p>No Host header in the access log for this day.</p></div>`;
+            return `<div class="alert-box success">
+                <p><strong>${data.TOTAL_NGINX_REQUESTS}</strong> web requests from
+                <strong>${data.nginx_requests_count || 0}</strong> unique external IPs.</p>
+            </div>
+            ${hostTable}
+            <button class="collapsible">Requests by Country</button>
+            <div class="content">${byCountry}</div>
+            <button class="collapsible">HTTP Status Codes</button>
+            <div class="content">${statuses ? `<table><tr><th>Status Code</th><th>Description</th><th>Total Requests</th></tr>${statuses}</table>` : '<p>No status code data available.</p>'}</div>
+            ${errBlock}`;
+        }
+
+        function renderEvents(data) {
+            const crit = data.severity_critical || [];
+            const high = data.severity_high || [];
+            const med = data.severity_medium || [];
+            let html = `<div class="alert-box info">
+                <p>Events are categorized by severity: Critical (${crit.length}), High (${high.length}), Medium (${med.length})</p>
+            </div>`;
+            if (crit.length) {
+                html += `<button class="collapsible critical">Critical Events (${crit.length})</button>
+                    <div class="content">${eventTable(crit, '#ff0055', 'rgba(255,0,85,0.1)')}</div>`;
+            } else {
+                html += `<button class="collapsible" disabled style="opacity:0.5;cursor:not-allowed;">Critical Events (0)</button>`;
+            }
+            if (high.length) {
+                html += `<button class="collapsible warning-level">High Severity Events (${high.length})</button>
+                    <div class="content">${eventTable(high, '#ffaa00', 'rgba(255,170,0,0.1)')}</div>`;
+            } else {
+                html += `<button class="collapsible" disabled style="opacity:0.5;cursor:not-allowed;">High Severity Events (0)</button>`;
+            }
+            html += `<button class="collapsible">Medium Severity Events (${med.length})</button>
+                <div class="content">${med.length ? eventTable(med, '#00d9ff', 'rgba(0,217,255,0.05)')
+                    : '<div class="alert-box info"><h3>No Medium Severity Events</h3></div>'}</div>`;
+            return html;
+        }
+
+        function showLiveMap() {
+            document.getElementById('live-map-wrap').style.display = 'block';
+            document.getElementById('archive-map').style.display = 'none';
+        }
+
+        function plotArchiveMap(points) {
+            const wrap = document.getElementById('live-map-wrap');
+            const el = document.getElementById('archive-map');
+            wrap.style.display = 'none';
+            el.style.display = 'block';
+            if (!archiveMap) {
+                archiveMap = L.map(el).setView([20, 0], 2);
+                L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 18,
+                    attribution: '&copy; OpenStreetMap'
+                }).addTo(archiveMap);
+            }
+            if (archiveLayer) {
+                archiveMap.removeLayer(archiveLayer);
+            }
+            archiveLayer = L.layerGroup();
+            (points || []).forEach(pt => {
+                if (pt.lat == null || pt.lon == null) return;
+                const style = KIND_STYLE[pt.kind] || { color: '#00ff41', radius: 6 };
+                const radius = pt.count > 100 ? style.radius + 4 : style.radius;
+                L.circleMarker([pt.lat, pt.lon], {
+                    radius: radius,
+                    color: style.color,
+                    fillColor: style.color,
+                    fillOpacity: 0.7,
+                    weight: 2
+                }).bindPopup(`<b>${escapeHtml(pt.city || '')}</b><br>IP: ${escapeHtml(pt.ip)}<br>${escapeHtml(pt.kind)}: ${escapeHtml(pt.count)}`)
+                    .addTo(archiveLayer);
+            });
+            archiveLayer.addTo(archiveMap);
+            setTimeout(() => archiveMap.invalidateSize(), 50);
+        }
+
+        function applyReport(data, date) {
+            currentDate = date;
+            document.getElementById('date-picker').value = date;
+            document.getElementById('summary-report-time').textContent = data.report_time || '';
+            document.getElementById('hostname').textContent = data.hostname || '';
+            document.getElementById('summary-period').textContent = `${data.from_date || ''} to ${data.to_date || ''}`;
+            document.getElementById('summary-failed').textContent = data.TOTAL_ATTEMPTS || 0;
+            document.getElementById('summary-ufw').innerHTML = `<strong>${data.TOTAL_UFW_BLOCKS || 0}</strong>`;
+            document.getElementById('summary-success').innerHTML = `<strong>${data.TOTAL_SUCCESS || 0}</strong>`;
+            document.getElementById('summary-critical').innerHTML = `<strong>${(data.severity_critical || []).length}</strong>`;
+            document.getElementById('summary-high').textContent = (data.severity_high || []).length;
+            document.getElementById('summary-medium').textContent = (data.severity_medium || []).length;
+            document.getElementById('summary-ufw-ips').textContent = data.ufw_blocks_count || 0;
+            document.getElementById('summary-nginx').textContent =
+                `${data.TOTAL_NGINX_REQUESTS || 0} (${data.nginx_requests_count || 0} unique IPs)`;
+            const status = document.getElementById('date-status');
+            status.textContent = date === LIVE_DATE ? 'Live report' : 'Archived ' + date;
+
+            document.getElementById('dyn-successful').innerHTML = renderSuccessful(data);
+            document.getElementById('dyn-failed').innerHTML = renderFailed(data);
+            document.getElementById('dyn-ufw').innerHTML = renderUfw(data);
+            document.getElementById('dyn-nginx').innerHTML = renderNginx(data);
+            document.getElementById('dyn-events').innerHTML = renderEvents(data);
+            ['dyn-successful', 'dyn-failed', 'dyn-ufw', 'dyn-nginx', 'dyn-events'].forEach(id => {
+                bindCollapsibles(document.getElementById(id));
+            });
+            updateNavButtons();
+            resetLogViewer(date);
+            if (date === LIVE_DATE) {
+                showLiveMap();
+            } else {
+                plotArchiveMap(data.map_points || []);
+            }
+        }
+
+        async function fetchGzJson(base) {
+            let res = await fetch(base + '.json.gz');
+            if (res.ok) {
+                if (typeof DecompressionStream === 'function' && res.body) {
+                    const stream = res.body.pipeThrough(new DecompressionStream('gzip'));
+                    return JSON.parse(await new Response(stream).text());
+                }
+                throw new Error('gzip archive fetched but DecompressionStream is unavailable');
+            }
+            res = await fetch(base + '.json');
+            if (res.ok) {
+                return res.json();
+            }
+            throw new Error('Archive not found: ' + base);
+        }
+
+        function loadArchiveJson(date) {
+            return fetchGzJson(`reports/${date}`);
+        }
+
+        // ---- Raw log event viewer (all filtering happens in the browser) ----
+        const LOG_PAGE = 300;
+        let logEvents = [];
+        let logShown = 0;
+        let logLoadedDate = null;
+
+        function flattenEvents(payload) {
+            const rows = [];
+            (payload.nginx || []).forEach(e => rows.push({
+                kind: 'nginx', ts: e.ts, ip: e.ip,
+                detail: `${e.host || '-'} ${e.method} ${e.url}`,
+                result: String(e.status),
+                ok: e.status < 400,
+                search: `${e.ip} ${e.host || ''} ${e.method} ${e.url} ${e.ua} ${e.ref} ${e.status}`.toLowerCase()
+            }));
+            (payload.ufw || []).forEach(e => rows.push({
+                kind: 'ufw', ts: e.ts, ip: e.ip,
+                detail: `${e.proto} port ${e.port}`,
+                result: 'BLOCKED',
+                ok: false,
+                search: `${e.ip} ${e.proto} ${e.port} blocked`.toLowerCase()
+            }));
+            (payload.ssh || []).forEach(e => rows.push({
+                kind: 'ssh', ts: e.ts, ip: e.ip,
+                detail: `user ${e.user} via ${e.method}`,
+                result: e.outcome,
+                ok: e.outcome === 'accepted',
+                search: `${e.ip} ${e.user} ${e.method} ${e.outcome}`.toLowerCase()
+            }));
+            rows.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+            return rows;
+        }
+
+        function filteredEvents() {
+            const q = document.getElementById('log-search').value.trim().toLowerCase();
+            const kind = document.getElementById('log-kind').value;
+            const status = document.getElementById('log-status').value;
+            return logEvents.filter(ev => {
+                if (kind !== 'all' && ev.kind !== kind) return false;
+                if (status === 'err' && ev.ok) return false;
+                if (status === 'ok' && !ev.ok) return false;
+                if (q && !ev.search.includes(q)) return false;
+                return true;
+            });
+        }
+
+        function renderLogRows(reset) {
+            const body = document.getElementById('log-body');
+            const rows = filteredEvents();
+            if (reset) {
+                body.innerHTML = '';
+                logShown = 0;
+            }
+            const slice = rows.slice(logShown, logShown + LOG_PAGE);
+            const html = slice.map(ev => {
+                const cls = ev.ok ? '' : (ev.kind === 'nginx' && ev.result.startsWith('4') ? 'st-warn' : 'st-err');
+                return `<tr>
+                    <td>${escapeHtml(ev.ts)}</td>
+                    <td class="kind-${ev.kind}">${escapeHtml(ev.kind)}</td>
+                    <td>${whois(ev.ip)}</td>
+                    <td class="wrap">${escapeHtml(ev.detail)}</td>
+                    <td class="${cls}">${escapeHtml(ev.result)}</td>
+                </tr>`;
+            }).join('');
+            body.insertAdjacentHTML('beforeend', html);
+            logShown += slice.length;
+            document.getElementById('log-more').style.display = logShown < rows.length ? 'inline-block' : 'none';
+            const counts = { nginx: 0, ufw: 0, ssh: 0 };
+            rows.forEach(r => counts[r.kind]++);
+            document.getElementById('log-meta').textContent =
+                `Showing ${logShown} of ${rows.length} matching events ` +
+                `(${counts.nginx} nginx, ${counts.ufw} UFW, ${counts.ssh} SSH) from ${logEvents.length} total for ${logLoadedDate}.`;
+        }
+
+        async function loadLogEvents(date) {
+            const meta = document.getElementById('log-meta');
+            meta.textContent = 'Loading log events for ' + date + '…';
+            try {
+                const payload = await fetchGzJson(`reports/${date}.events`);
+                logEvents = flattenEvents(payload);
+                logLoadedDate = date;
+                renderLogRows(true);
+            } catch (err) {
+                logEvents = [];
+                logLoadedDate = date;
+                document.getElementById('log-body').innerHTML = '';
+                document.getElementById('log-more').style.display = 'none';
+                meta.textContent = 'No per-event archive stored for ' + date + '.';
+            }
+        }
+
+        function resetLogViewer(date) {
+            logEvents = [];
+            logShown = 0;
+            logLoadedDate = null;
+            document.getElementById('log-body').innerHTML = '';
+            document.getElementById('log-more').style.display = 'none';
+            const entry = (archiveIndex || []).find(d => d.date === date);
+            document.getElementById('log-meta').textContent = entry && entry.events === false
+                ? 'No per-event archive stored for ' + date + '.'
+                : 'Log events are loaded on demand.';
+        }
+
+        async function selectDate(date) {
+            if (!archiveDates.includes(date)) {
+                document.getElementById('date-status').textContent = 'No archive for ' + date;
+                return;
+            }
+            document.getElementById('date-status').textContent = 'Loading ' + date + '…';
+            const data = await loadArchiveJson(date);
+            applyReport(data, date);
+        }
+
+        function updateNavButtons() {
+            const idx = archiveDates.indexOf(currentDate);
+            // dates are newest-first
+            document.getElementById('date-prev').disabled = idx < 0 || idx >= archiveDates.length - 1;
+            document.getElementById('date-next').disabled = idx <= 0;
+        }
+
+        (function () {
+            const el = document.getElementById('hostname');
+            if (el && el.innerText.trim() === '') {
+                el.innerText = window.location.host;
+            }
+        })();
+
+        bindCollapsibles(document);
+
+        window.addEventListener('load', async () => {
+            document.getElementById('date-prev').addEventListener('click', () => {
+                const idx = archiveDates.indexOf(currentDate);
+                if (idx >= 0 && idx < archiveDates.length - 1) {
+                    selectDate(archiveDates[idx + 1]);
+                }
+            });
+            document.getElementById('date-next').addEventListener('click', () => {
+                const idx = archiveDates.indexOf(currentDate);
+                if (idx > 0) {
+                    selectDate(archiveDates[idx - 1]);
+                }
+            });
+            document.getElementById('date-picker').addEventListener('change', (ev) => {
+                selectDate(ev.target.value);
+            });
+            document.getElementById('log-load').addEventListener('click', () => {
+                loadLogEvents(currentDate);
+            });
+            document.getElementById('log-more').addEventListener('click', () => renderLogRows(false));
+            ['log-search', 'log-kind', 'log-status'].forEach(id => {
+                const el = document.getElementById(id);
+                const evt = id === 'log-search' ? 'input' : 'change';
+                el.addEventListener(evt, () => {
+                    if (logLoadedDate) renderLogRows(true);
+                });
+            });
+            try {
+                const idxRes = await fetch('reports/index.json');
+                if (idxRes.ok) {
+                    const idx = await idxRes.json();
+                    archiveIndex = idx.dates || [];
+                    archiveDates = archiveIndex.map(d => d.date);
+                    const picker = document.getElementById('date-picker');
+                    if (archiveDates.length) {
+                        picker.min = archiveDates[archiveDates.length - 1];
+                        picker.max = archiveDates[0];
+                    }
+                    updateNavButtons();
+                    document.getElementById('date-status').textContent =
+                        archiveDates.length ? `Live report · ${archiveDates.length} archived day(s)` : 'Live report';
+                }
+            } catch (err) {
+                document.getElementById('date-status').textContent = 'Archive index unavailable';
+            }
+        });
     </script>
     </div>
 </body>
