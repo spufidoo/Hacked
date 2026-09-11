@@ -9,12 +9,17 @@ import getpass
 import random
 import json
 import gzip
+import ipaddress
 import time
 import urllib.request
 import urllib.error
 import tarfile
 import tempfile
 import base64
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
+from html import escape as html_escape
 from jinja2 import Environment, FileSystemLoader
 from systemd import journal
 from datetime import datetime, timedelta
@@ -67,6 +72,35 @@ ARCHIVE_MAX_DAYS = config.getint('ARCHIVE', 'archive_max_days', fallback=730)
 # and group them in the browser. ~30 KB gzipped for a busy day.
 ARCHIVE_EVENTS = config.getboolean('ARCHIVE', 'archive_events', fallback=True)
 ARCHIVE_MAX_EVENTS = config.getint('ARCHIVE', 'archive_max_events', fallback=20000)
+
+# Successful SSH from private/Tailscale/listed networks is informational.
+# Unexpected public IPs stay critical.
+_ALWAYS_TRUSTED = (
+    '127.0.0.0/8', '::1/128',
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+    '100.64.0.0/10',          # Tailscale CGNAT
+    'fd7a:115c:a1e0::/48',    # Tailscale IPv6
+)
+_trusted_networks = []
+for _net in list(_ALWAYS_TRUSTED) + [
+        n.strip() for n in config.get('TRUSTED', 'trusted_ips', fallback='').split(',')
+        if n.strip()]:
+    try:
+        _trusted_networks.append(ipaddress.ip_network(_net, strict=False))
+    except ValueError:
+        pass
+
+
+def _is_trusted_ip(ip):
+    """True for LAN, Tailscale, loopback, and IPs listed in [TRUSTED]."""
+    if not ip or ip in ('localhost', '-', 'unknown'):
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in _trusted_networks)
+
 # Cache for API lookups (to avoid rate limits)
 geo_cache = {}
 geo_cache_file = f"{ROOT}/.geo_cache.json"
@@ -534,16 +568,22 @@ def extract_security_events(ssh_attempts, nginx_access, nginx_errors, from_date,
                     successful_logins[ip]['count'] += 1
                     successful_logins[ip]['method'] = method
                     successful_logins[ip]['timestamps'].append(timestamp)
-                    
-                    # Also add to critical events
-                    critical_events.append({
+
+                    event = {
                         'service': 'SSH',
                         'event': f'Successful Login ({method})',
                         'user': user,
                         'ip': ip,
                         'timestamp': timestamp,
                         'message': line.strip()
-                    })
+                    }
+                    # Expected (LAN / Tailscale / listed WAN) is informational.
+                    # An unexpected public IP stays critical.
+                    if _is_trusted_ip(ip):
+                        event['event'] += ' (expected)'
+                        medium_events.append(event)
+                    else:
+                        critical_events.append(event)
     except Exception as e:
         if debug:
             print(f"Error checking SSH successful logins: {e}")
@@ -1749,6 +1789,9 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
     
     # Return statistics for email summary
     return {
+        'total_attempts': TOTAL_ATTEMPTS,
+        'total_ufw_blocks': TOTAL_UFW_BLOCKS,
+        'total_nginx_requests': TOTAL_NGINX_REQUESTS,
         'ip_count': len(ssh_attempts),
         'country_count': len(country_attempts),
         'user_count': len(user_attempts),
@@ -1768,118 +1811,312 @@ def generate_html_report(ssh_attempts, TOTAL_ATTEMPTS, ufw_blocks, TOTAL_UFW_BLO
         'medium_count': len(medium_events)
     }
 
+# ---------------------------------------------------------------------------
+# Email report.
+#
+# The nightly mail is a summary, not a replacement for the web report, so it
+# leads with the numbers that decide whether anyone needs to look, then gives
+# the top few entries per section. Anything with a zero count is omitted
+# rather than printed as an empty heading.
+# ---------------------------------------------------------------------------
+
+# Friendly names for the ports and status codes that turn up in these reports.
+PORT_NAMES = {
+    '21': 'FTP', '22': 'SSH', '23': 'Telnet', '25': 'SMTP', '53': 'DNS',
+    '80': 'HTTP', '110': 'POP3', '143': 'IMAP', '443': 'HTTPS', '445': 'SMB',
+    '1433': 'MSSQL', '3306': 'MySQL', '3389': 'RDP', '5432': 'PostgreSQL',
+    '5900': 'VNC', '6379': 'Redis', '8080': 'HTTP alt', '9090': 'Cockpit',
+    '22221': 'SSH proxy to loki', '22222': 'SSH proxy to thor',
+    '22223': 'SSH proxy to odin',
+}
+
+STATUS_NAMES = {
+    '200': 'OK', '204': 'No Content', '206': 'Partial', '301': 'Moved',
+    '302': 'Found', '304': 'Not Modified', '400': 'Bad Request',
+    '401': 'Unauthorized', '403': 'Forbidden', '404': 'Not Found',
+    '405': 'Not Allowed', '408': 'Timeout', '413': 'Too Large',
+    '416': 'Bad Range', '429': 'Rate Limited', '444': 'No Response',
+    '499': 'Client Closed', '500': 'Server Error', '502': 'Bad Gateway',
+    '503': 'Unavailable',
+}
+
+EMAIL_TOP_N = 5
+
+
+def _num(value):
+    """Thousands-separated integer, tolerant of junk."""
+    try:
+        return f'{int(value):,}'
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _short_dt(value):
+    """'2026-09-10 00:00:00' -> '10 Sep 2026 00:00'."""
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(str(value), fmt).strftime('%-d %b %Y %H:%M')
+        except ValueError:
+            continue
+    return str(value)
+
+
+def _report_day(value):
+    """Short day label used in the subject line."""
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(str(value), fmt).strftime('%-d %b')
+        except ValueError:
+            continue
+    return str(value)
+
+
+def _port_label(port):
+    name = PORT_NAMES.get(str(port))
+    return f'{port} ({name})' if name else str(port)
+
+
+def _status_label(status):
+    name = STATUS_NAMES.get(str(status))
+    return f'{status} {name}' if name else str(status)
+
+
+def _text_rows(rows, indent='  '):
+    """Align (label, value) pairs into two columns."""
+    rows = [(str(label), str(value)) for label, value in rows]
+    if not rows:
+        return ''
+    width = max(len(label) for label, _ in rows)
+    return ''.join(f'{indent}{label:<{width}}   {value}\n' for label, value in rows)
+
+
+def _plural(count, singular, plural=None):
+    """'1 IP' / '5 IPs', with an explicit plural for irregular nouns."""
+    plural = plural or singular + 's'
+    try:
+        n = int(count)
+    except (TypeError, ValueError):
+        return f'{count} {plural}'
+    return f'{_num(n)} {singular if n == 1 else plural}'
+
+
+def _email_subject(hostname, stats, to_date):
+    """Put the day's headline in the subject so triage needs no click."""
+    day = _report_day(to_date)
+    critical = stats.get('critical_count', 0)
+    high = stats.get('high_count', 0)
+    if critical:
+        return f'[CRITICAL] {hostname} security report, {day}: {critical} critical event(s)'
+    if high:
+        return f'[HIGH] {hostname} security report, {day}: {high} high-severity event(s)'
+    return (f'{hostname} security report, {day}: '
+            f'{_num(stats.get("total_ufw_blocks", 0))} blocked, '
+            f'{_num(stats.get("total_success", 0))} login(s)')
+
+
+def _glance_rows(stats):
+    """The five numbers that decide whether the full report needs reading."""
+    def total(count, *detail):
+        """Append the 'from N IPs' detail only when there is something to say."""
+        if not count:
+            return '0'
+        return '%s (%s)' % (_num(count), ', '.join(detail)) if detail else _num(count)
+
+    return [
+        ('Successful logins', _num(stats.get('total_success', 0))),
+        ('Failed SSH logins', total(
+            stats.get('total_attempts', 0),
+            _plural(stats.get('ip_count', 0), 'IP'),
+            _plural(stats.get('country_count', 0), 'country', 'countries'))),
+        ('Firewall blocks', total(
+            stats.get('total_ufw_blocks', 0),
+            _plural(stats.get('ufw_blocks_count', 0), 'IP'))),
+        ('Web requests', total(
+            stats.get('total_nginx_requests', 0),
+            _plural(stats.get('nginx_requests_count', 0), 'IP'))),
+        ('Security events', '%s critical, %s high, %s medium' % (
+            _num(stats.get('critical_count', 0)),
+            _num(stats.get('high_count', 0)),
+            _num(stats.get('medium_count', 0)))),
+    ]
+
+
+def _build_email_text(report_url, hostname, stats, from_date, to_date):
+    """Plain-text alternative: compact, aligned, no ASCII art."""
+    out = [
+        f'Security report for {hostname}',
+        f'{_short_dt(from_date)} to {_short_dt(to_date)}',
+        '',
+        'AT A GLANCE',
+        _text_rows(_glance_rows(stats)).rstrip('\n'),
+    ]
+
+    critical = stats.get('critical_count', 0)
+    if critical:
+        out += ['', f'ACTION NEEDED: {critical} critical event(s). See the full report.']
+
+    hosts = stats.get('nginx_host_summary') or []
+    if hosts:
+        rows = [(rec['host'], '%s from %s%s' % (
+            _plural(rec['total'], 'request'), _plural(rec['ips'], 'IP'),
+            ' (proxied)' if rec.get('proxied') else ''))
+            for rec in hosts[:EMAIL_TOP_N]]
+        out += ['', 'WEB REQUESTS BY HOST', _text_rows(rows).rstrip('\n')]
+
+    statuses = stats.get('nginx_status_summary') or []
+    if statuses:
+        top = sorted(statuses, key=lambda kv: -kv[1])[:EMAIL_TOP_N]
+        rows = [(_status_label(s), _num(c)) for s, c in top]
+        out += ['', 'TOP HTTP STATUS CODES', _text_rows(rows).rstrip('\n')]
+
+    errors = stats.get('nginx_errors_count', 0)
+    if errors:
+        out += ['', f'nginx logged {_num(errors)} error(s).']
+
+    ufw_countries = stats.get('ufw_country_attempts') or []
+    ufw_ports = stats.get('ufw_port_summary') or []
+    if ufw_countries or ufw_ports:
+        out += ['', 'FIREWALL BLOCKS']
+        if ufw_countries:
+            rows = [(c, _num(n)) for c, n in ufw_countries[:EMAIL_TOP_N]]
+            out += ['  By country:', _text_rows(rows, indent='    ').rstrip('\n')]
+        if ufw_ports:
+            rows = [(_port_label(p), _num(n)) for p, n in ufw_ports[:EMAIL_TOP_N]]
+            out += ['  By port:', _text_rows(rows, indent='    ').rstrip('\n')]
+
+    ssh_countries = stats.get('country_attempts') or []
+    ssh_users = stats.get('user_attempts') or []
+    if ssh_countries or ssh_users:
+        out += ['', 'FAILED SSH LOGINS']
+        if ssh_countries:
+            rows = [(c, _num(n)) for c, n in ssh_countries[:EMAIL_TOP_N]]
+            out += ['  By country:', _text_rows(rows, indent='    ').rstrip('\n')]
+        if ssh_users:
+            rows = [(u, _num(n)) for u, n in ssh_users[:EMAIL_TOP_N]]
+            out += ['  Targeted usernames:', _text_rows(rows, indent='    ').rstrip('\n')]
+
+    out += ['', f'Full report: {report_url}']
+    return '\n'.join(out) + '\n'
+
+
+def _html_table(rows, headers=None):
+    """Minimal inline-styled table; email clients ignore stylesheets."""
+    cell = 'padding:3px 12px 3px 0;border-bottom:1px solid #eee;'
+    parts = ['<table style="border-collapse:collapse;font-size:14px;">']
+    if headers:
+        parts.append('<tr>' + ''.join(
+            f'<th style="{cell}text-align:left;color:#666;font-weight:600;">{html_escape(str(h))}</th>'
+            for h in headers) + '</tr>')
+    for row in rows:
+        parts.append('<tr>' + ''.join(
+            f'<td style="{cell}">{html_escape(str(v))}</td>' for v in row) + '</tr>')
+    parts.append('</table>')
+    return ''.join(parts)
+
+
+def _build_email_html(report_url, hostname, stats, from_date, to_date):
+    """HTML alternative: same content, easier to scan."""
+    critical = stats.get('critical_count', 0)
+    high = stats.get('high_count', 0)
+    accent = '#c0392b' if critical else '#e67e22' if high else '#2c7a4b'
+
+    parts = [
+        '<html><body style="margin:0;padding:20px;'
+        'font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;'
+        'color:#222;background:#fff;">',
+        f'<h2 style="margin:0 0 4px;font-size:20px;color:{accent};">'
+        f'Security report for {html_escape(hostname)}</h2>',
+        f'<p style="margin:0 0 18px;color:#666;font-size:13px;">'
+        f'{html_escape(_short_dt(from_date))} to {html_escape(_short_dt(to_date))}</p>',
+    ]
+
+    if critical:
+        parts.append(
+            f'<p style="margin:0 0 18px;padding:10px 14px;background:#fdecea;'
+            f'border-left:4px solid #c0392b;font-size:14px;">'
+            f'<strong>Action needed:</strong> {_num(critical)} critical event(s).</p>')
+
+    def section(title, body):
+        parts.append(f'<h3 style="margin:22px 0 8px;font-size:15px;color:#333;">'
+                     f'{html_escape(title)}</h3>')
+        parts.append(body)
+
+    section('At a glance', _html_table(_glance_rows(stats)))
+
+    hosts = stats.get('nginx_host_summary') or []
+    if hosts:
+        rows = [(rec['host'], _num(rec['total']), _num(rec['ips']),
+                 'Reverse proxy' if rec.get('proxied') else 'Local')
+                for rec in hosts[:EMAIL_TOP_N]]
+        section('Web requests by host',
+                _html_table(rows, ['Host', 'Requests', 'IPs', 'Type']))
+
+    statuses = stats.get('nginx_status_summary') or []
+    if statuses:
+        top = sorted(statuses, key=lambda kv: -kv[1])[:EMAIL_TOP_N]
+        section('Top HTTP status codes',
+                _html_table([(_status_label(s), _num(c)) for s, c in top],
+                            ['Status', 'Requests']))
+
+    errors = stats.get('nginx_errors_count', 0)
+    if errors:
+        parts.append(f'<p style="margin:14px 0 0;font-size:14px;">'
+                     f'nginx logged {_num(errors)} error(s).</p>')
+
+    ufw_countries = stats.get('ufw_country_attempts') or []
+    if ufw_countries:
+        section('Firewall blocks by country',
+                _html_table([(c, _num(n)) for c, n in ufw_countries[:EMAIL_TOP_N]],
+                            ['Country', 'Blocks']))
+
+    ufw_ports = stats.get('ufw_port_summary') or []
+    if ufw_ports:
+        section('Firewall blocks by port',
+                _html_table([(_port_label(p), _num(n)) for p, n in ufw_ports[:EMAIL_TOP_N]],
+                            ['Port', 'Blocks']))
+
+    ssh_countries = stats.get('country_attempts') or []
+    if ssh_countries:
+        section('Failed SSH logins by country',
+                _html_table([(c, _num(n)) for c, n in ssh_countries[:EMAIL_TOP_N]],
+                            ['Country', 'Attempts']))
+
+    ssh_users = stats.get('user_attempts') or []
+    if ssh_users:
+        section('Targeted usernames',
+                _html_table([(u, _num(n)) for u, n in ssh_users[:EMAIL_TOP_N]],
+                            ['Username', 'Attempts']))
+
+    parts.append(
+        f'<p style="margin:26px 0 0;font-size:14px;">'
+        f'<a href="{html_escape(report_url, quote=True)}" '
+        f'style="color:#1a6dd4;">View the full report</a></p>')
+    parts.append('</body></html>')
+    return ''.join(parts)
+
+
 # Function to send an email with the report link using Postfix
-def send_email(report_url, recipient_email, total_attempts, ip_count, country_count, user_count, 
-               top_countries, top_users, total_ufw_blocks, ufw_blocks_count, ufw_top_countries, 
-               ufw_top_ports, total_nginx_requests, nginx_requests_count, nginx_top_countries,
-               nginx_status_summary, nginx_errors_count, total_success, critical_count, high_count, 
-               medium_count, from_date, to_date, debug=False, nginx_host_summary=None):
+def send_email(report_url, recipient_email, stats, from_date, to_date, debug=False):
     hostname = subprocess.check_output("hostname").decode("utf-8").strip()
 
-    # Create email headers and body with summary
-    subject = f"{hostname} Security Report"
-    
-    body = f"""Security Report for {hostname}
-Period: {from_date} to {to_date}
+    subject = _email_subject(hostname, stats, to_date)
+    text_body = _build_email_text(report_url, hostname, stats, from_date, to_date)
+    html_body = _build_email_html(report_url, hostname, stats, from_date, to_date)
 
-===============================================================
-                    SUMMARY OVERVIEW                       
-===============================================================
+    if debug:
+        print(subject)
+        print(text_body)
 
-[!] SUCCESSFUL LOGINS:        {total_success}
-[X] FAILED LOGIN ATTEMPTS:    {total_attempts} (from {ip_count} IPs across {country_count} countries)
-[#] UFW FIREWALL BLOCKS:      {total_ufw_blocks} (from {ufw_blocks_count} unique IPs)
-[@] WEB SERVER REQUESTS:      {total_nginx_requests} (from {nginx_requests_count} unique IPs)
-
-[CRITICAL] SECURITY EVENTS:   {critical_count}
-[HIGH]     SEVERITY EVENTS:   {high_count}
-[MEDIUM]   SEVERITY EVENTS:   {medium_count}
-
-===============================================================
-
-=== SUCCESSFUL LOGINS ===
-{total_success} successful authentication(s) detected.
-Review the detailed report to verify all logins are authorized.
-
-=== FAILED LOGIN ATTEMPTS ===
-Total Attempts: {total_attempts}
-Unique IP Addresses: {ip_count}
-Countries: {country_count}
-User IDs Targeted: {user_count}
-
-=== TOP 10 COUNTRIES (Failed Attempts) ===
-"""
-    # Add top 10 countries
-    for i, (country, count) in enumerate(top_countries[:10], 1):
-        body += f"{i:2d}. {country:30s} : {count:6d} attempts\n"
-    
-    body += "\n=== TOP 10 TARGETED USER IDs ===\n"
-    # Add top 10 users
-    for i, (user, count) in enumerate(top_users[:10], 1):
-        body += f"{i:2d}. {user:20s} : {count:6d} attempts\n"
-    
-    body += f"\n=== BLOCKED BY UFW FIREWALL ===\n"
-    body += f"Total Blocks: {total_ufw_blocks}\n"
-    body += f"Unique IPs: {ufw_blocks_count}\n"
-    
-    if ufw_top_countries:
-        body += "\n=== TOP 10 COUNTRIES (UFW Blocks) ===\n"
-        for i, (country, count) in enumerate(ufw_top_countries[:10], 1):
-            body += f"{i:2d}. {country:30s} : {count:6d} blocks\n"
-    
-    if ufw_top_ports:
-        body += "\n=== TOP TARGETED PORTS ===\n"
-        port_names = {'22': 'SSH', '80': 'HTTP', '443': 'HTTPS', '3389': 'RDP', 
-                      '3306': 'MySQL', '5432': 'PostgreSQL', '21': 'FTP', '25': 'SMTP'}
-        for i, (port, count) in enumerate(ufw_top_ports[:10], 1):
-            port_name = port_names.get(port, f'Port {port}')
-            body += f"{i:2d}. {port_name:20s} : {count:6d} blocks\n"
-    
-    body += f"\n=== WEB SERVER ACTIVITY (NGINX) ===\n"
-    body += f"Total Requests: {total_nginx_requests}\n"
-    body += f"Unique IPs: {nginx_requests_count}\n"
-
-    if nginx_host_summary:
-        body += "\n=== REQUESTS BY VIRTUAL HOST ===\n"
-        for rec in nginx_host_summary:
-            proxied = " (proxied)" if rec.get('proxied') else ""
-            body += f"{rec['host']:30s} : {rec['total']:6d} requests from {rec['ips']} IPs{proxied}\n"
-    
-    if nginx_status_summary:
-        body += "\n=== HTTP STATUS CODES ===\n"
-        status_names = {'200': 'OK', '304': 'Not Modified', '404': 'Not Found', 
-                       '403': 'Forbidden', '500': 'Server Error', '502': 'Bad Gateway'}
-        for status, count in nginx_status_summary[:10]:
-            status_name = status_names.get(status, f'Status {status}')
-            body += f"{status} {status_name:20s} : {count:6d} requests\n"
-    
-    if nginx_top_countries:
-        body += "\n=== TOP 10 COUNTRIES (Web Access) ===\n"
-        for i, (country, count) in enumerate(nginx_top_countries[:10], 1):
-            body += f"{i:2d}. {country:30s} : {count:6d} requests\n"
-    
-    if nginx_errors_count > 0:
-        body += f"\n[!] NGINX ERRORS: {nginx_errors_count} errors detected\n"
-    
-    # Add security events summary
-    body += f"\n=== SECURITY EVENTS BY SEVERITY ===\n"
-    body += f"Comprehensive monitoring from: auditd, SSH, nginx, rkhunter, AIDE, \n"
-    body += f"ClamAV, chkrootkit, Lynis, Tiger, and psad.\n\n"
-    body += f"[CRITICAL] Events:  {critical_count} - Immediate attention required\n"
-    body += f"[HIGH]     Severity: {high_count} - Review recommended\n"
-    body += f"[MEDIUM]   Severity: {medium_count} - Informational\n"
-    
-    if critical_count > 0:
-        body += f"\n*** WARNING: {critical_count} CRITICAL security events detected! ***\n"
-        body += f"    Review the detailed report immediately.\n"
-    
-    body += f"\n{'=' * 63}\n"
-    body += f"\nFull detailed report: {report_url}\n"
-    
-    email_content  = f"From: {sender_email}\n"
-    email_content += f"To: {recipient_email}\n"
-    email_content += f"Subject: {subject}\n\n"
-    email_content += body
+    # multipart/alternative: clients that refuse HTML still get a readable mail.
+    message = MIMEMultipart('alternative')
+    message['Subject'] = subject
+    message['From'] = sender_email
+    message['To'] = recipient_email
+    message['Date'] = formatdate(localtime=True)
+    message['Message-ID'] = make_msgid(domain=hostname.split()[0] or 'localhost')
+    message.attach(MIMEText(text_body, 'plain', 'utf-8'))
+    message.attach(MIMEText(html_body, 'html', 'utf-8'))
+    email_content = message.as_string()
 
     try:
         # Run the sendmail command with a timeout
@@ -2003,33 +2240,7 @@ def main():
     # Email the report link with summary statistics (unless --no-email flag is set)
     if not args.no_email and not args.archive_only:
         try:
-            send_email(
-                report_url, 
-                args.email, 
-                TOTAL_ATTEMPTS,
-                stats['ip_count'],
-                stats['country_count'],
-                stats['user_count'],
-                stats['country_attempts'],
-                stats['user_attempts'],
-                TOTAL_UFW_BLOCKS,
-                stats['ufw_blocks_count'],
-                stats['ufw_country_attempts'],
-                stats['ufw_port_summary'],
-                TOTAL_NGINX_REQUESTS,
-                stats['nginx_requests_count'],
-                stats['nginx_country_requests'],
-                stats['nginx_status_summary'],
-                stats['nginx_errors_count'],
-                stats['total_success'],
-                stats['critical_count'],
-                stats['high_count'],
-                stats['medium_count'],
-                norm_from,
-                norm_to,
-                debug=args.debug,
-                nginx_host_summary=stats.get('nginx_host_summary'),
-            )
+            send_email(report_url, args.email, stats, norm_from, norm_to, debug=args.debug)
         except Exception as e:
             journal.send(MESSAGE=f"Failed to send email: {e}. Report still generated at {report_url}", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
     else:

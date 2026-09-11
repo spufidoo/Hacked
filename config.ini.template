@@ -25,6 +25,11 @@ geolocation_method = database
 # maxmind_account_id = YOUR_ACCOUNT_ID_HERE
 # maxmind_license_key = YOUR_LICENSE_KEY_HERE
 
+[TRUSTED]
+# Comma-separated IPs or CIDRs. Successful SSH from these is informational.
+# Private LAN, loopback and Tailscale are always trusted.
+# trusted_ips = 203.0.113.10, 198.51.100.0/24
+
 [ARCHIVE]
 archive_dir = /var/www/html/reports
 archive_top_n = 50
