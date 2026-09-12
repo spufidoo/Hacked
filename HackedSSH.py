@@ -1,6 +1,7 @@
 # HackedSSH
 import os
 import re
+import shutil
 import folium
 import argparse
 import subprocess
@@ -13,6 +14,7 @@ import ipaddress
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import tarfile
 import tempfile
 import base64
@@ -64,6 +66,9 @@ ENABLE_NGINX_MARKERS = config.getboolean('MAP', 'enable_nginx_markers', fallback
 ENABLE_LEGEND = config.getboolean('MAP', 'enable_legend', fallback=False)
 # Geolocation method: 'api' (ip-api.com) or 'database' (GeoLite2)
 GEOLOCATION_METHOD = config.get('MAP', 'geolocation_method', fallback='database').strip().lower()
+# Re-download GeoLite2 when the local copy is older than this many days.
+# MaxMind publishes new builds twice a week; 0 disables refreshing.
+GEOLITE_MAX_AGE_DAYS = config.getint('MAP', 'geolite_max_age_days', fallback=14)
 # Daily JSON archives for date scrolling (gzipped, capped detail)
 ARCHIVE_DIR = config.get('ARCHIVE', 'archive_dir', fallback='/var/www/html/reports').strip()
 ARCHIVE_TOP_N = config.getint('ARCHIVE', 'archive_top_n', fallback=50)
@@ -100,6 +105,33 @@ def _is_trusted_ip(ip):
     except ValueError:
         return False
     return any(addr in net for net in _trusted_networks)
+
+
+# Carrier-grade NAT has no useful geolocation. Python 3.13 stopped reporting it
+# as private, so keep it in an explicit list rather than relying on is_private.
+_NON_GEOLOCATABLE = tuple(ipaddress.ip_network(n) for n in (
+    '100.64.0.0/10',          # CGNAT, includes Tailscale
+    'fd7a:115c:a1e0::/48',    # Tailscale IPv6
+))
+
+
+def _is_private_ip(ip):
+    """True for addresses that can never be geolocated (RFC1918, loopback, CGNAT).
+
+    Matching on string prefixes would also swallow public space such as
+    172.64.0.0/10 (Cloudflare) or 172.217.0.0/16 (Google), so compare against
+    the real networks instead.
+    """
+    if not ip or ip in ('localhost', '-', 'unknown'):
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    if addr.is_private or addr.is_loopback or addr.is_link_local \
+            or addr.is_multicast or addr.is_reserved or addr.is_unspecified:
+        return True
+    return any(addr in net for net in _NON_GEOLOCATABLE)
 
 # Cache for API lookups (to avoid rate limits)
 geo_cache = {}
@@ -318,7 +350,7 @@ def extract_nginx_logs(from_date, to_date, debug=False):
                 continue
             ip_address = rec['ip']
             # Skip local IPs
-            if ip_address.startswith(('127.', '192.168.', '10.', '172.')):
+            if _is_private_ip(ip_address):
                 continue
             status = rec['status']
             nginx_access[ip_address][status] += 1
@@ -817,12 +849,35 @@ def extract_security_events(ssh_attempts, nginx_access, nginx_errors, from_date,
     
     return critical_events, high_events, medium_events, successful_logins
 
-# Download GeoLite2 database if missing
-def download_geolite2_database(db_type='City'):
+class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
+    """Drop the Basic auth header when MaxMind redirects to object storage.
+
+    download.maxmind.com answers an authenticated request with a 302 to a
+    presigned R2 URL. That URL carries its own signature and rejects a request
+    that also sends an Authorization header with HTTP 400, so the header has to
+    be removed before following the redirect.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None and urllib.parse.urlsplit(newurl).netloc != \
+                urllib.parse.urlsplit(req.full_url).netloc:
+            new_req.remove_header('Authorization')
+        return new_req
+
+
+_maxmind_opener = urllib.request.build_opener(_StripAuthOnRedirect)
+
+
+# Download GeoLite2 database if missing or stale
+def download_geolite2_database(db_type='City', target_path=None):
     """Download GeoLite2 database from MaxMind (requires free account, account ID and license key)
-    
+
     Compatible with MaxMind's current download system as documented at:
     https://dev.maxmind.com/geoip/updating-databases/
+
+    target_path overwrites an existing database in place; otherwise the file is
+    written under GEO_DB_ROOT.
     """
     # MaxMind requires both AccountID and LicenseKey for Basic Authentication
     # Users need to sign up at https://www.maxmind.com/en/geolite2/signup
@@ -837,48 +892,41 @@ def download_geolite2_database(db_type='City'):
         return False
     
     try:
-        # Use MaxMind's permalink format with Basic Authentication
-        # MaxMind uses R2 presigned URLs that redirect - urllib handles redirects automatically
-        if db_type == 'City':
-            # GeoLite2-City permalink format
-            url = f"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key={license_key}&suffix=tar.gz"
-            filename = 'GeoLite2-City.mmdb'
-        else:  # Country
-            url = f"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key={license_key}&suffix=tar.gz"
-            filename = 'GeoLite2-Country.mmdb'
-        
-        journal.send(MESSAGE=f"Downloading GeoLite2-{db_type} database from MaxMind...", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
-        
+        edition = f"GeoLite2-{db_type}"
+        filename = f"{edition}.mmdb"
+        url = f"https://download.maxmind.com/geoip/databases/{edition}/download?suffix=tar.gz"
+
+        journal.send(MESSAGE=f"Downloading {edition} database from MaxMind...", SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+
         # Create Basic Auth header (MaxMind requires AccountID:LicenseKey)
         credentials = f"{account_id}:{license_key}".encode('utf-8')
         auth_header = base64.b64encode(credentials).decode('utf-8')
-        
-        # Download the tar.gz file with Basic Authentication
-        # MaxMind redirects to R2 storage - urllib.request.urlopen handles redirects automatically
+
         req = urllib.request.Request(url)
         req.add_header('Authorization', f'Basic {auth_header}')
         req.add_header('User-Agent', 'HackedSSH/1.0')
-        
+
         with tempfile.NamedTemporaryFile(delete=False, suffix='.tar.gz') as tmp_file:
             tmp_path = tmp_file.name
-            with urllib.request.urlopen(req, timeout=60) as response:
-                # Follow redirects (MaxMind uses R2 presigned URLs)
-                tmp_file.write(response.read())
+            with _maxmind_opener.open(req, timeout=120) as response:
+                shutil.copyfileobj(response, tmp_file)
         
         # Extract the .mmdb file from the tar.gz
-        target_path = f"{GEO_DB_ROOT}/{filename}"
+        dest = target_path or f"{GEO_DB_ROOT}/{filename}"
         with tarfile.open(tmp_path, 'r:gz') as tar:
             # Find the .mmdb file in the archive
             for member in tar.getmembers():
                 if member.name.endswith('.mmdb'):
-                    # Extract to temporary location first
                     extracted_member = tar.extractfile(member)
                     if extracted_member:
-                        # Write directly to target path
-                        with open(target_path, 'wb') as out_file:
-                            out_file.write(extracted_member.read())
-                        os.chmod(target_path, 0o644)
-                        journal.send(MESSAGE=f"GeoLite2-{db_type} database downloaded to {target_path}",
+                        # Stage beside the target so a failed write cannot leave
+                        # a truncated database behind, then swap it in atomically.
+                        staged = f"{dest}.new"
+                        with open(staged, 'wb') as out_file:
+                            shutil.copyfileobj(extracted_member, out_file)
+                        os.chmod(staged, 0o644)
+                        os.replace(staged, dest)
+                        journal.send(MESSAGE=f"GeoLite2-{db_type} database downloaded to {dest}",
                                     SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
                         os.unlink(tmp_path)
                         return True
@@ -908,14 +956,63 @@ def download_geolite2_database(db_type='City'):
                     SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="err")
         return False
 
-# Check and download GeoLite2 databases if missing (when using database method)
+def geo_database_age_days(db_path):
+    """Age of a GeoLite2 file in days, taken from the build date MaxMind embeds.
+
+    The embedded build epoch is what matters for accuracy; file mtime only
+    records when the copy was made and can look recent after an rsync.
+    Returns None when the age cannot be determined.
+    """
+    if not db_path or not os.path.exists(db_path):
+        return None
+    try:
+        reader = Reader(db_path)
+        build_epoch = reader.metadata().build_epoch
+        reader.close()
+        return (time.time() - build_epoch) / 86400
+    except Exception:
+        try:
+            return (time.time() - os.path.getmtime(db_path)) / 86400
+        except OSError:
+            return None
+
+
+def refresh_geo_database(db_type, db_path):
+    """Download GeoLite2-<db_type> when the local copy is missing or stale.
+
+    MaxMind rebuilds GeoLite2 twice a week and IP allocations move constantly,
+    so an old database reports countries and cities that no longer own the
+    address. Returns the path that should be used for lookups.
+    """
+    filename = f"GeoLite2-{db_type}.mmdb"
+    if not db_path:
+        if download_geolite2_database(db_type):
+            return find_geo_database(filename)
+        return db_path
+
+    if GEOLITE_MAX_AGE_DAYS <= 0:
+        return db_path
+
+    age = geo_database_age_days(db_path)
+    if age is None or age <= GEOLITE_MAX_AGE_DAYS:
+        return db_path
+
+    journal.send(MESSAGE=f"GeoLite2-{db_type} at {db_path} is {age:.0f} days old "
+                f"(limit {GEOLITE_MAX_AGE_DAYS}); refreshing from MaxMind.",
+                SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="info")
+    # Overwrite in place so a stale copy earlier in the search path cannot win.
+    if download_geolite2_database(db_type, target_path=db_path):
+        return db_path
+    journal.send(MESSAGE=f"Refresh of GeoLite2-{db_type} failed; continuing with the "
+                f"{age:.0f} day old database. Country and city results may be wrong.",
+                SYSLOG_IDENTIFIER="HackedSSH", PRIORITY="warning")
+    return db_path
+
+
+# Check and refresh GeoLite2 databases (when using database method)
 if GEOLOCATION_METHOD == 'database':
-    if not GEO_CITY_PATH:
-        if download_geolite2_database('City'):
-            GEO_CITY_PATH = find_geo_database('GeoLite2-City.mmdb')
-    if not GEO_COUNTRY_PATH:
-        if download_geolite2_database('Country'):
-            GEO_COUNTRY_PATH = find_geo_database('GeoLite2-Country.mmdb')
+    GEO_CITY_PATH = refresh_geo_database('City', GEO_CITY_PATH)
+    GEO_COUNTRY_PATH = refresh_geo_database('Country', GEO_COUNTRY_PATH)
 
 # Load geo cache from file
 def load_geo_cache():
@@ -944,7 +1041,7 @@ def batch_lookup_ips(ip_list):
     # Filter out local IPs and already cached IPs
     ips_to_lookup = []
     for ip in ip_list:
-        if not ip.startswith(('127.', '192.168.', '10.', '172.')) and ip != 'localhost':
+        if not _is_private_ip(ip):
             # Check if not in cache or cache expired
             if ip not in geo_cache or (time.time() - geo_cache[ip].get('timestamp', 0) >= 2592000):
                 ips_to_lookup.append(ip)
@@ -988,7 +1085,7 @@ def batch_lookup_ips(ip_list):
 def get_geo_from_api(ip_address):
     """Get geolocation from cache (populated by batch_lookup_ips)"""
     # Skip local/private IPs
-    if ip_address.startswith(('127.', '192.168.', '10.', '172.')) or ip_address == 'localhost':
+    if _is_private_ip(ip_address):
         return None, None, None, None
     
     # Check cache

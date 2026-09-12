@@ -19,6 +19,10 @@ enable_legend = False
 #                  or 'database' (GeoLite2 - local, may be outdated)
 # API method uses caching to minimize requests (45 requests/minute limit)
 geolocation_method = database
+# Re-download GeoLite2 when the local copy is older than this many days.
+# MaxMind publishes new builds twice a week. Stale databases are the main cause
+# of IPs being reported in the wrong country or city. 0 disables refreshing.
+geolite_max_age_days = 14
 # MaxMind credentials (required for automatic GeoLite2 database download)
 # Get a free account at: https://www.maxmind.com/en/geolite2/signup
 # Find your Account ID and License Key in your MaxMind account portal
